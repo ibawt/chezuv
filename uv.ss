@@ -175,7 +175,6 @@
     (lambda (t)
       (alloc-zero (req-size t))))
 
-
   (define getaddrinfo
     (lambda (loop name cb)
       (define uv-getaddrinfo
@@ -186,18 +185,21 @@
         (foreign-procedure "uv_freeaddrinfo"
                            ((* addrinfo))
                            void))
-      (let* ([hint (alloc-zero (ftype-sizeof addrinfo))]
+      (let* ([hint (make-ftype-pointer addrinfo (alloc-zero (ftype-sizeof addrinfo)))]
              [req (make-req UV_GETADDRINFO)]
              [code (foreign-callable
                     (lambda (req status addr)
                       (cb status addr)
                       (uv-freeaddrinfo addr)
-                      (foreign-free req))
+                      (foreign-free req)
+                      (foreign-free (ftype-pointer-address hint)))
                     (void* int (* addrinfo))
                     void)])
         (lock-object code)
+        (ftype-set! addrinfo (ai_family) hint AF_INET)
+        (ftype-set! addrinfo (ai_socktype) hint SOCK_STREAM)
         (uv-getaddrinfo loop req (foreign-callable-entry-point code)
-                        name #f (make-ftype-pointer addrinfo 0)))))
+                        name #f hint))))
 
   (define handle-size
     (foreign-procedure "uv_handle_size"
@@ -273,10 +275,11 @@
 
   (define bytevector-for-each
     (lambda (f bv)
-      (let ((len (bytevector-length bv)))
-        (do ([i 0 (+ i 1)])
-            (< i len)
-          (f (bytevector-u8-ref bv i) i)))))
+      (let ([len (bytevector-length bv)])
+        (let loop ([i 0])
+                (when (< i len)
+                  (f (bytevector-u8-ref bv i) i)
+                  (loop (+ i 1)))))))
 
   (define (string->buf s)
     (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
@@ -284,7 +287,7 @@
            [b (foreign-alloc (bytevector-length bytes))])
       (bytevector-for-each
        (lambda (x i)
-         (foreign-set! 'char b i x))
+         (foreign-set! 'unsigned-8 b i x))
        bytes)
       (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 b))
       (ftype-set! uv-buf (len) buf (bytevector-length bytes))
@@ -296,39 +299,97 @@
                        int))
 
   (define (stream-write stream s cb)
-    (let* ([buf (string->buf s)]
-           [code (foreign-callable
-                  (lambda (req status)
-                    (cb stream status)
-                    (foreign-free (ftype-pointer-address buf)))
-                  (void* int)
-                  void)]
-           [write-req (make-req UV_WRITE)])
+    (letrec ([buf (string->buf s)]
+             [code (foreign-callable
+                    (lambda (req status)
+                      (cb stream status)
+                      (foreign-free (ftype-pointer-address buf))
+                      (unlock-object code))
+                    (void* int)
+                    void)]
+             [write-req (make-req UV_WRITE)])
       (lock-object code)
-      (uv-write write-req stream buf 1 (foreign-callable-entry-point code))))
+      (check (uv-write write-req stream buf 1 (foreign-callable-entry-point code)))))
 
   (define uv-read-stop
     (foreign-procedure "uv_read_stop"
                        (void*)
                        int))
 
+  (define (handle-close h cb)
+    (define uv-close
+      (foreign-procedure "uv_close"
+                         (void* void*)
+                         void))
+    (letrec ([code (foreign-callable
+                    (lambda (h)
+                      (cb h)
+                      (foreign-free h)
+                      (unlock-object code))
+                    (void*)
+                    void)])
+      (lock-object code)
+      (uv-close h (foreign-callable-entry-point code))))
+
+  (define uv-strerror
+    (foreign-procedure "uv_strerror"
+                       (int)
+                       (* char)))
+
+  (define uv-err-name
+    (foreign-procedure "uv_err_name"
+                       (int)
+                       string))
+  (define strerror
+    (lambda (x)
+      (define strerror_r
+        (foreign-procedure "strerror_r"
+                           (int (* char) size_t)
+                           int))
+      (let ([buf (make-bytevector 2048)])
+        (strerror_r x buf 2048))))
+
+  (define-syntax macro
+    (syntax-rules ()
+      ((k (name . args) body ...)
+       (macro name (lambda args body ...)))
+      ((k name transformer)
+       (define-syntax name
+         (lambda (stx)
+           (syntax-case stx ()
+             ((l . sv)
+              (let* ((v (syntax->datum (syntax sv)))
+                     (e (apply transformer v)))
+                (if (eq? (void) e)
+                    (syntax (void))
+                    (datum->syntax (syntax l) e))))))))))
+
+  (define uv-error? positive?)
+
+  (macro (check expr)
+    `(let ([r ,expr])
+       (unless (= 0 r)
+         (let ([errstr (if (uv-error? r)
+                           (uv-err-name r)
+                           (strerror (abs r)))])
+           (error ',expr "error in uv" r))
+         #t)))
+
   (define (stream-read stream cb)
-    (let* ([code (foreign-callable
+    (letrec ([code (foreign-callable
                   (lambda (s nb buf)
-                    (format #t "read ~a bytes~n" nb)
                     (let ([p (make-bytevector nb)])
                       (let loop ([i 0])
                         (when (< i nb)
                           (bytevector-u8-set! p i (ftype-ref uv-buf (base i) buf))
                           (loop (+ i 1))))
                       (cb stream p)
-                      (uv-read-stop stream)
-                      ;; (foreign-free (ftype-pointer-address buf)))
-                    ))
+                      (check (uv-read-stop stream))
+                      (unlock-object code)))
                   (void* ssize_t (* uv-buf))
                   void)])
       (lock-object code)
-      (uv-read-start stream alloc-buffer (foreign-callable-entry-point code))))
+      (check (uv-read-start stream alloc-buffer (foreign-callable-entry-point code)))))
 
   (define (tcp-connect loop addr on-conn)
     (define uv-tcp-init
@@ -339,19 +400,18 @@
       (foreign-procedure "uv_tcp_connect"
                          (void* void* (* sockaddr) void*)
                          int))
-    (let* ([conn (alloc-zero (handle-size UV_STREAM))]
-           [socket (alloc-zero (handle-size UV_TCP))]
-           [code (foreign-callable
-                  (lambda (conn status)
-                    (on-conn socket status))
-                  (void* int)
-                  void)])
+    (letrec* ([conn (alloc-zero (handle-size UV_STREAM))]
+              [socket (alloc-zero (handle-size UV_TCP))]
+              [code (foreign-callable
+                     (lambda (conn status)
+                       (on-conn socket status)
+                       (unlock-object code))
+                     (void* int)
+                     void)])
       (lock-object code)
-      (let ((r (uv-tcp-init loop socket)))
-        (when (not (= 0 r))
-          (format #t "r = ~a tcp init" r)))
-      (uv-tcp-connect conn socket addr
-                      (foreign-callable-entry-point code))))
+      (check (uv-tcp-init loop socket))
+      (check (uv-tcp-connect conn socket addr
+                             (foreign-callable-entry-point code)))))
 
   (define (for-each-addr a f)
     (let ([next (ftype-ref addrinfo (ai_next) a)])

@@ -13,10 +13,9 @@
                       (sockaddr-set-port s 80)
                       (display (tcp-connect loop s
                                             (lambda (conn status)
-                                              (stream-write conn "GET / HTTP/1.0~r~n"
+                                              (stream-write conn (format #f "GET / \r\n\r\n")
                                                             (lambda (s status)
                                                               (stream-read s
                                                                            (lambda (s buf)
-                                                                             (display (utf8->string buf))))))
-                                              (format #t "on-conn: ~a~n" status))))))))
+                                                                             (display (utf8->string buf)))))))))))))
    (uv-run loop 0)))
