@@ -1,7 +1,11 @@
 #! /usr/bin/env scheme -q --debug-on-exception
 
-(parameterize ([compile-profile 'source])
+(parameterize ([compile-profile 'source]
+               [generate-allocation-counts #t]
+               ;; [generate-instruction-counts #t]
+
+               )
     (load "run.ss"))
-(run)
+(run-with-cost)
 (profile-dump-html)
 (exit)

@@ -231,8 +231,9 @@
                        int))
 
   (define (close-all-handles uv-loop)
-    (walk-handles uv-loop (lambda (handle arg)
-                         (handle-close handle nothing))))
+    (walk-handles uv-loop
+                  (lambda (handle arg)
+                    (handle-close handle nothing))))
 
 
   (define (walk-handles uv-loop on-handle)
@@ -264,7 +265,7 @@
                                        SIGINT))))
 
   (define (close loop)
-    (check (uv-stop loop))
+    (uv-stop loop)
     (close-all-handles loop))
 
   (define uvloop-create
@@ -309,9 +310,7 @@
           (lambda () #f)
           (lambda () (f l))
           (lambda ()
-            (format #t "about to close~n")
-            ;; (check (uvloop-close l))
-            )))))
+            (format #t "about to close~n"))))))
 
   (define req-size
     (foreign-procedure "uv_req_size"
@@ -339,10 +338,11 @@
         (foreign-procedure "uv_freeaddrinfo"
                            ((* addrinfo))
                            void))
-      (let* ([hint (make-ftype-pointer addrinfo (alloc-zero (ftype-sizeof addrinfo)))]
-             [req (make-req UV_GETADDRINFO)]
-             [code (foreign-callable
-                    (lambda (req status addr)
+      (letrec ([hint (make-ftype-pointer addrinfo (alloc-zero (ftype-sizeof addrinfo)))]
+               [req (make-req UV_GETADDRINFO)]
+               [code (foreign-callable
+                      (lambda (req status addr)
+                      (unlock-object code)
                       (cb status addr)
                       (uv-freeaddrinfo addr)
                       (foreign-free req)
@@ -355,49 +355,46 @@
         (uv-getaddrinfo loop req (foreign-callable-entry-point code)
                         name #f hint))))
 
-
   (define (make-handler t)
     (define handle-size
       (foreign-procedure "uv_handle_size"
                          (int)
                          int))
       (let ([mem (foreign-alloc (handle-size t))])
-        ;; (format #t "make-handler(~a): ~d\n" t mem)
         mem))
 
-  (define uv-idle-start
-    (foreign-procedure "uv_idle_start"
-                       (void* void*)
-                       int))
 
-  (define uv-idle-stop
-    (foreign-procedure "uv_idle_stop"
-                       (void*)
-                       int))
+  (define (make-idle l cb)
+    (define uv-idle-start
+      (foreign-procedure "uv_idle_start"
+                         (void* void*)
+                         int))
 
-  (define make-idle
-    (lambda (l cb)
-      (let* ([idle (make-handler UV_IDLE)]
-             [code (foreign-callable (lambda (ll)
-                                       (if (cb)
-                                           #t
-                                           (begin
-                                             (uv-idle-stop idle))))
-                                     (void*)
-                                    void)])
-        (uv-idle-init l idle)
-        (lock-object code)
-        (uv-idle-start idle (foreign-callable-entry-point code)))))
+    (define uv-idle-stop
+      (foreign-procedure "uv_idle_stop"
+                         (void*)
+                         int))
+    (let* ([idle (make-handler UV_IDLE)]
+           [code (foreign-callable (lambda (ll)
+                                     (if (cb)
+                                         #t
+                                         (begin
+                                           (uv-idle-stop idle))))
+                                   (void*)
+                                   void)])
+      (uv-idle-init l idle)
+      (lock-object code)
+      (uv-idle-start idle (foreign-callable-entry-point code))))
 
   (define alloc-buffer
     (foreign-callable-entry-point
      (let ([alloc (foreign-callable
-                   (lambda (handle suggested-size b)
-                     (let ([x (foreign-alloc suggested-size)])
-                       (ftype-set! uv-buf (base) b (make-ftype-pointer unsigned-8 x))
-                       (ftype-set! uv-buf (len) b suggested-size)))
-                   (void* size_t (* uv-buf))
-                   void)])
+                    (lambda (handle suggested-size b)
+                      (let ([x (foreign-alloc suggested-size)])
+                        (ftype-set! uv-buf (base) b (make-ftype-pointer unsigned-8 x))
+                        (ftype-set! uv-buf (len) b suggested-size)))
+                    (void* size_t (* uv-buf))
+                    void)])
        (lock-object alloc)
        alloc)))
 
@@ -442,13 +439,24 @@
                        (void* void* (* uv-buf) unsigned-int void*)
                        int))
 
+  (define (alloc-uv-buf nb)
+    (let ([bytes (make-ftype-pointer unsigned-8 (foreign-alloc nb))]
+          [buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))])
+      (ftype-set! uv-buf (base) buf bytes)
+      (ftype-set! uv-buf (len) buf nb)
+      buf))
+
+  (define (free-uv-buf buf)
+    (foreign-free (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+    (foreign-free (ftype-pointer-address buf)))
+
   (define (stream-write stream s cb)
     (letrec ([buf (string->buf s)]
              [code (foreign-callable
                     (lambda (req status)
+                      (unlock-object code)
                       (cb stream status)
-                      (foreign-free (ftype-pointer-address buf))
-                      (unlock-object code))
+                      (free-uv-buf buf))
                     (void* int)
                     void)]
              [write-req (make-req UV_WRITE)])
@@ -465,16 +473,21 @@
       (foreign-procedure "uv_close"
                          (void* void*)
                          void))
-    (letrec ([code (foreign-callable
-                    (lambda (h)
-                      ;; (format #t "closing handle: ~d\n" h)
-                      (cb h)
-                      (foreign-free h)
-                      (unlock-object code))
-                    (void*)
-                    void)])
-      (lock-object code)
-      (uv-close h (foreign-callable-entry-point code))))
+    (define uv-is-closing
+      (foreign-procedure "uv_is_closing"
+                         (void*)
+                         int))
+    (when (= 0 (uv-is-closing h))
+      (letrec ([code (foreign-callable
+                      (lambda (h)
+                        (cb h)
+                        (foreign-free h)
+                        (unlock-object code))
+                      (void*)
+                      void)])
+
+        (lock-object code)
+        (uv-close h (foreign-callable-entry-point code)))))
 
   (define uv-strerror
     (foreign-procedure "uv_strerror"
@@ -521,17 +534,21 @@
            (error ,(format #f "~a" expr) errstr r))
          #t)))
 
+  (define memcpy
+    (foreign-procedure "memcpy"
+                       (u8* void* int)
+                       void*))
+
   (define (stream-read stream cb)
     (letrec ([code (foreign-callable
                   (lambda (s nb buf)
                     (let ([p (make-bytevector nb)])
-                      (let loop ([i 0])
-                        (when (< i nb)
-                          (bytevector-u8-set! p i (ftype-ref uv-buf (base i) buf))
-                          (loop (+ i 1))))
+                      ;; TODO 0 copy this
+                      (memcpy p (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)
                       (cb stream p)
                       (check (uv-read-stop stream))
-                      (unlock-object code)))
+                      (unlock-object code)
+                      (foreign-free (ftype-pointer-address (ftype-ref uv-buf (base) buf)))))
                   (void* ssize_t (* uv-buf))
                   void)])
       (lock-object code)
@@ -550,8 +567,7 @@
                             (set! read-pos (+ read-pos len))
                             (on-read bv len)
                             (when (= read-pos buf-len)
-                              (set! buf #f))
-                            ))])
+                              (set! buf #f))))])
         (if buf
             (send-buf)
             (stream-read stream
@@ -741,7 +757,6 @@
                                                         (read-http-request (make-reader s)
                                                                            (lambda (status headers body)
                                                                              (close-stream s)
-                                                                             ;; (handle-close s (lambda (x) #f))
                                                                              (on-done status headers body)))))))))))))
 
   (define display-addrinfo
