@@ -1,11 +1,9 @@
-#! /usr/bin/env scheme -q --debug-on-exception
+#! /usr/bin/env scheme -q --optimize-level 3
 
-(parameterize ([compile-profile 'source]
-               [generate-allocation-counts #t]
-               ;; [generate-instruction-counts #t]
-
-               )
+(profile-load-data "profile")
+(parameterize ([compile-profile 'block])
     (load "run.ss"))
-(run-with-cost)
+(run)
+(profile-dump-data "profile")
 (profile-dump-html)
 (exit)

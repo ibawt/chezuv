@@ -5,3 +5,8 @@
 *.scm~
 *.scm#*
 .#*.scm
+/.DS_Store
+/profile
+/profile.html
+*.so
+*.html
