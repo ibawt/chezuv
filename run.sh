@@ -1,9 +1,10 @@
-#! /usr/bin/env scheme -q --optimize-level 3
+#! /usr/bin/env scheme -q --debug-on-exception
 
-(profile-load-data "profile")
+;; (profile-load-data "profile")
 (parameterize ([compile-profile 'block])
-    (load "run.ss"))
+  (load "run.ss")
+  )
 (run)
-(profile-dump-data "profile")
-(profile-dump-html)
+;; (profile-dump-data "profile")
+;; (profile-dump-html)
 (exit)

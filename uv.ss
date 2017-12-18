@@ -2,6 +2,8 @@
 (library (uv)
   (export with-uvloop
           make-http-request
+          run-async
+          ideal-http-request
           close
           stream-read
           make-reader
@@ -126,10 +128,10 @@
     (letrec ([sig-handle (make-handler UV_SIGNAL)]
              [code (foreign-callable
                     (lambda (sig-handle signum)
-                      (close-all-handles uv-loop)
                       (when (= signum SIGINT)
-                        (uv-stop uv-loop))
-                      (unlock-object code))
+                        (close-all-handles uv-loop)
+                        (uv-stop uv-loop)
+                        (unlock-object code)))
                     (void* int)
                     void)])
       (lock-object code)
@@ -203,7 +205,7 @@
       (alloc-zero (req-size t))))
 
   (define getaddrinfo
-    (lambda (loop name cb)
+    (lambda (loop name)
       (define uv-getaddrinfo
         (foreign-procedure "uv_getaddrinfo"
                            (void* void* void* string string (* addrinfo))
@@ -212,22 +214,32 @@
         (foreign-procedure "uv_freeaddrinfo"
                            ((* addrinfo))
                            void))
-      (letrec ([hint (make-ftype-pointer addrinfo (alloc-zero (ftype-sizeof addrinfo)))]
-               [req (make-req UV_GETADDRINFO)]
-               [code (foreign-callable
-                      (lambda (req status addr)
-                      (unlock-object code)
-                      (cb status addr)
-                      (uv-freeaddrinfo addr)
-                      (foreign-free req)
-                      (foreign-free (ftype-pointer-address hint)))
-                    (void* int (* addrinfo))
-                    void)])
-        (lock-object code)
-        (ftype-set! addrinfo (ai_family) hint AF_INET)
-        (ftype-set! addrinfo (ai_socktype) hint SOCK_STREAM)
-        (uv-getaddrinfo loop req (foreign-callable-entry-point code)
-                        name #f hint))))
+      (make-async
+       (lambda (ok fail)
+         (letrec ([hint (make-ftype-pointer addrinfo (alloc-zero (ftype-sizeof addrinfo)))]
+                  [req (make-req UV_GETADDRINFO)]
+                  [code (foreign-callable
+                         (lambda (req status addr)
+                           (unlock-object code)
+                           (if (= 0 status)
+                               (ok addr)
+                               (fail addr))
+                           (uv-freeaddrinfo addr)
+                           (foreign-free req)
+                           (foreign-free (ftype-pointer-address hint)))
+                         (void* int (* addrinfo))
+                         void)])
+           (lock-object code)
+           (ftype-set! addrinfo (ai_family) hint AF_INET)
+           (ftype-set! addrinfo (ai_socktype) hint SOCK_STREAM)
+           (uv-getaddrinfo loop req (foreign-callable-entry-point code)
+                           name #f hint))))))
+
+  (define (run-async async)
+    (async (lambda (err ok)
+             (if err
+                 (format #t "Error: ~a\n" err)
+                 (format #t "Ok: ~a\n" ok)))))
 
   (define (make-handler t)
     (define handle-size
@@ -522,19 +534,65 @@
       (check (uv-tcp-connect conn socket addr
                              (foreign-callable-entry-point code)))))
 
-  (define (make-http-request loop url on-done)
-    (let ([url (parse-url url)])
-      (getaddrinfo loop (cadr (assoc 'host url))
-                   (lambda (status addr)
-                     (when (= 0 status)
-                       (let ([s (ftype-ref addrinfo (ai_addr) addr)])
-                         (sockaddr-set-port s (cadr (assoc 'port url)))
-                         (tcp-connect loop s
-                                      (lambda (conn status)
-                                        (stream-write conn (format #f "GET ~a HTTP/1.0\r\n\r\n" (cadr (assoc 'path url)))
-                                                      (lambda (s status)
-                                                        (read-http-request (make-reader s)
-                                                                           (lambda (status headers body)
-                                                                             (close-stream s)
-                                                                             (on-done status headers body))))))))))))))
+  ;; (define (make-http-request loop url on-done)
+  ;;   (let ([url (parse-url url)])
+  ;;     (getaddrinfo loop (cadr (assoc 'host url))
+  ;;                  (lambda (status addr)
+  ;;                    (when (= 0 status)
+  ;;                      (let ([s (ftype-ref addrinfo (ai_addr) addr)])
+  ;;                        (sockaddr-set-port s (cadr (assoc 'port url)))
+  ;;                        (tcp-connect loop s
+  ;;        
+  ;;                                       (stream-write conn (format #f "GET ~a HTTP/1.0\r\n\r\n" (cadr (assoc 'path url)))
+  ;;                                                     (lambda (s status)
+  ;;               gg                                        (read-http-request (make-reader s)
+  ;;                                                                          (lambda (status headers body)
+  ;;                                                                            (close-stream s)
+  ;;                                                                            (on-done status headers body))))))))))))))
+
+  (include "monad.ss")
+
+  (define (ideal-http-request loop url on-done)
+    ((async-do
+      (<- addr (getaddrinfo loop url))
+      (<- conn (tcp-connect loop (addr->sockaddr addr (cadr (assoc 'port url)))))
+      (<- stream (stream-write conn (format #f "GET / HTTP/1.0\r\n\r\n")))
+      (<- resp read-http-request (make-reader stream))
+      (async-return resp))
+     on-done))
+
+  ;; (define (other-idea loop url)
+  ;;   (lispy-do
+  ;;    (getaddrinfo loop url)
+  ;;    ((status addr)
+  ;;     (let ([s (ftype-ref addrinfo (ai_addr) addr)])
+  ;;       (sockaddr-set-port s (cadr (assoc 'port url)))
+  ;;       (tcp-connect loop s)))
+  ;;    ((tcp-connect ))
+  ;;      ()))
+
+  (define (make-http-request loop url)
+    #f
+    ;; (call/cc
+    ;;  (lambda (on-done)
+    ;;    (format #t "do I get here\n")
+    ;;    (let ([url (parse-url url)])
+    ;;      (getaddrinfo loop (cadr (assoc 'host url))
+    ;;                   (lambda (err status addr)
+    ;;                     (format #t "how about here\n?")
+    ;;                     (when (= 0 status)
+    ;;                       (let ([s (ftype-ref addrinfo (ai_addr) addr)])
+    ;;                         (sockaddr-set-port s (cadr (assoc 'port url)))
+    ;;                         (tcp-connect loop s
+    ;;                                      (lambda (conn status)
+    ;;                                        (format #t "way down here\n")
+    ;;                                        (stream-write conn (format #f "GET ~a HTTP/1.0\r\n\r\n" (cadr (assoc 'path url)))
+    ;;                                                      (lambda (s status)
+    ;;                                                        (format #t "wtf\n")
+    ;;                                                        (read-http-request (make-reader s)
+    ;;                                                                           (lambda (status headers body)
+    ;;                                                                             (format #t "ack\n")
+    ;;                                                                             (close-stream s)
+    ;;                                                                             (on-done (list status headers body)))))))))))))
+       ))
 
