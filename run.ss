@@ -1,5 +1,4 @@
 ;; -*- geiser-scheme-implementation: chez -*-
-
 (import (chezscheme)
         (uv))
 
@@ -13,41 +12,38 @@
 
 (define display-http-request
   (lambda (status headers body)
-    (format #t "[~a] Status: ~a~n" n status)
+    (format #t "[~a] Status: ~a\n" 0 status)
     (for-each (lambda (h)
                 (format #t "~a: ~a\n" (car h) (cadr h)))
               headers)
     (newline)
     (format #t "~a\n" (utf8->string body))))
 
-
 (define (run)
+  (format #t "Running\n")
   (time
-   (with-uvloop
+   (uv/with-loop
     (lambda (loop)
-      ;; ((getaddrinfo loop "google.ca")
-      ;;  (lambda (ok)
-      ;;    (format #t "ok\n"))
-      ;;  (lambda (fail)
-      ;;    (format #t "fail\n")))
-      (format #t "this was: ~a\n" (ideal-http-request loop "google.ca"))
-      ;; (lambda (n ... ) n) (lambda (y ...) y))
-      ;; (format #t "this was: ~a\n" (ideal-http-request loop "google.ca"))
-       ;; (let top ((n 0))
-      ;;   (format #t "at top\n")
-      ;;   (if (< n 1)
-
-      ;;       (let ([cc (make-http-request loop "http://google.ca")])
-      ;;         (format #t "cc: ~a\n" cc)
-      ;;         (if (procedure? cc)
-      ;;             (begin
-      ;;               (format #t "procedure\n"))
-      ;;             (begin
-      ;;               (format #t "idk: ~a\n" cc)))
-      ;;         ;; (when (pair? cc)
-      ;;         ;;     (display-http-request (car cc) (caar cc) (caaar cc)))
-      ;;         (top (+ 1 n)))
-      ;;       (close loop)))
-      (format #t "running loop\n")
-      (uv-run loop 0)
+      (uv/tcp-listen loop "0.0.0.0:6565"
+                     (lambda (err conn stream)
+                       (uv/serve-http stream
+                                        (uv/static-file-handler "./"))))
+      (format #t "listening on 0.0.0:6565~n")
+      ;; (call/cc
+      ;;  (lambda (done)
+      ;;    (let ([rx 0]
+      ;;          [url (string->url "http://localhost:8080")])
+      ;;      (let top ((n 0))
+      ;;        (ideal-http-request loop url
+      ;;                            (lambda (err ok)
+      ;;                              (format #t "err: ~a\n" err)
+      ;;                              (format #t "ok: ~a\n" ok)
+      ;;                              (set! rx (+ 1 rx))
+      ;;                              (if (>= rx 1000)
+      ;;                                  (begin
+      ;;                                    (format #t "stopping loop at 1000\n")
+      ;;                                    (stop loop)
+      ;;                                    (done loop)))))
+      ;;        (if (< n 1000)
+      ;;            (top (+ 1 n)))))))
       (format #t "exiting...~n")))))

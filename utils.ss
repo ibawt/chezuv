@@ -13,6 +13,14 @@
                   (syntax (void))
                   (datum->syntax (syntax l) e))))))))))
 
+(define bytevector-for-each
+  (lambda (f bv)
+    (let ([len (bytevector-length bv)])
+      (let loop ([i 0])
+        (when (< i len)
+          (f (bytevector-u8-ref bv i) i)
+          (loop (+ i 1)))))))
+
 (define (inc x)
   (+ x 1))
 
@@ -76,15 +84,27 @@
   (let loop ([pos 0]
              [start 0]
              [words '()])
-    (if (>= pos (string-length s))
-        (reverse words)
-        (if (not (char=? delim (string-ref s pos)))
-            (loop (+ 1 pos)
-                  start
-                  words)
-            (loop (+ 1 pos)
-                  (+ 1 pos)
-                  (cons (substring s start pos) words))))))
+    (cond
+     ((>= pos (string-length s))
+      (reverse (cons (substring s start (string-length s)) words)))
+     ((not (char=? delim (string-ref s pos)))
+      (loop (+ 1 pos)
+            start
+            words))
+     (else
+      (loop (+ 1 pos)
+            (+ 1 pos)
+            (cons (substring s start pos) words))))))
+
+    ;; (if (>= pos (string-length s))
+    ;;     (reverse (cons (substring s start (string-length s)) words))
+    ;;     (if (not (char=? delim (string-ref s pos)))
+    ;;         (loop (+ 1 pos)
+    ;;               start
+    ;;               words)
+    ;;         (loop (+ 1 pos)
+    ;;               (+ 1 pos)
+    ;;               (cons (substring s start pos) words))))
 
 (define (find-char str ch pos)
   (let loop ([pos pos])
