@@ -14,6 +14,8 @@
           ;; uv/sockaddr->ip-address
           uv/stream-write
           uv/tcp-connect
+          uv/serve-http
+          uv/static-file-handler
           uv/getaddrinfo)
   (import (chezscheme)
           (irregex))
@@ -311,6 +313,16 @@
       (reader bv 0 n (lambda (bv len)
                        (on-done bv)))))
 
+  (define (header-value headers key)
+    (let ([v (assoc key headers)])
+      (if v
+          (cadr v)
+          #f)))
+
+  (define (header->number headers key)
+    (let ([v (header-value headers key)])
+      (if v (string->number v) v)))
+
   (define (uv/read-http-response reader)
     (make-async
      (lambda (ok fail)
@@ -318,10 +330,12 @@
                      (lambda (headers)
                        (let* ([status (parse-status (car headers))]
                               [headers (parse-headers (cdr headers))]
-                              [content-length (string->number (cadr (assoc "Content-Length" headers)))])
-                         (uv/read-fully reader content-length
-                                     (lambda (body)
-                                       (ok (list status headers body))))))))))
+                              [content-length (header->number headers "Content-Length")])
+                         (if content-length
+                             (uv/read-fully reader content-length
+                                            (lambda (body)
+                                              (ok (list status headers body))))
+                             (ok (list status headers #f)))))))))
 
 
   (define (uv/close-stream stream)
@@ -404,7 +418,6 @@
         (foreign-free (ftype-pointer-address s))
         #f))))
 
-
   (define (uv/tcp-listen loop addr on-conn)
     (letrec ([s-addr (uv/ipv4->sockaddr addr)]
              [h (make-handler UV_TCP)]
@@ -426,9 +439,8 @@
       h))
 
   (define (uv/static-file-handler path)
-    (lambda (err req res next)
-      #f
-      ))
+    (lambda (err ok)
+      (format #t "static file handler wooo: ~a\n" ok)))
 
   (define (uv/write-http-request stream req)
     (make-async
@@ -438,8 +450,8 @@
   (define (uv/serve-http stream handler)
     ((async-do
       (<- req (uv/read-http-response (uv/make-reader stream)))
-      (<- resp (uv/write-http-request stream req))
-      (async-return resp))))
+      (async-return req))
+     handler))
 
   (define (uv/make-http-request loop url on-done)
     ((async-do
