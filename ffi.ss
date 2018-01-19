@@ -4,6 +4,7 @@
       (base (* unsigned-8))
     (len size_t)))
 
+(define UV_EOF -4095)
 
 (define UV_UNKNOWN_HANDLE 0)
 (define UV_ASYNC 1)

@@ -10,10 +10,12 @@
           uv/close
           uv/stop
           uv/make-reader
+          uv/close-stream
           uv/tcp-listen
           ;; uv/sockaddr->ip-address
           uv/stream-write
           uv/tcp-connect
+          uv/make-idle
           uv/serve-http
           uv/static-file-handler
           uv/getaddrinfo)
@@ -140,6 +142,8 @@
         (lock-object code)
         (uv-close h (foreign-callable-entry-point code)))))
 
+  (define uv/close-handle handle-close)
+
   (define (alloc-uv-buf nb)
     (let ([bytes (make-ftype-pointer unsigned-8 (foreign-alloc nb))]
           [buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))])
@@ -155,7 +159,7 @@
    (let ([lines '()])
      (uv/read-lines reader
                  (lambda (line)
-                   (if (= 0 (bytevector-length line))
+                   (if (or (not line) (= 0 (bytevector-length line)))
                        (begin
                          (done (reverse lines))
                          #f)
@@ -177,7 +181,7 @@
 
  (define (parse-status status-line)
    (let ([splits (string-split (utf8->string status-line) #\space)])
-     (cadr splits)))
+     splits))
 
   (define (uv/close loop)
     (uv-stop loop)
@@ -256,16 +260,27 @@
          (lock-object code)
          (check (uv-write write-req stream buf 1 (foreign-callable-entry-point code)))))))
 
+  (define num-reads 0)
+  (define get-next-read-id
+    (lambda ()
+      (let ([x num-reads])
+        (set! num-reads (+ 1 num-reads))
+        x)))
 
   (define (uv/stream-read stream cb)
     (letrec ([code (foreign-callable
-                  (lambda (s nb buf)
-                    (let ([p (make-bytevector nb)])
-                      (memcpy p (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)
+                    (lambda (s nb buf)
                       (check (uv-read-stop stream))
-                      (unlock-object code)
-                      (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                      (cb stream p)))
+                      (if (negative? nb)
+                          (begin
+                            (unlock-object code)
+                            (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                            (cb #f #f))
+                          (let ([p (make-bytevector nb)])
+                            (memcpy p (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)
+                            (unlock-object code)
+                            (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                            (cb stream p))))
                   (void* ssize_t (* uv-buf))
                   void)])
       (lock-object code)
@@ -289,24 +304,29 @@
             (when (>= read-pos buf-len)
               (set! buf #f))
             (on-read bv len))))
-    (lambda (bv start len on-read )
+    (lambda (bv start len on-read)
       (if buf
           (send-buf bv start len on-read)
           (uv/stream-read stream
                        (lambda (s b)
-                         (set! buf b)
-                         (set! read-pos 0)
-                         (set! buf-len (bytevector-length b))
-                         (send-buf bv start len on-read))))))
+                         (if s
+                             (begin
+                               (set! buf b)
+                               (set! read-pos 0)
+                               (set! buf-len (bytevector-length b))
+                               (send-buf bv start len on-read))
+                             (on-read #f #f)))))))
 
   (define (uv/read-lines reader on-line)
     (reader (make-bytevector 1024) 0 'eol
             (lambda (bv num-read)
-              (let ([trim (if (= 13 (bytevector-u8-ref bv (- num-read 2)))
-                              (- num-read 2)
-                              (- num-read 1))])
-                (if (on-line (truncate-bytevector! bv trim))
-                    (uv/read-lines reader on-line))))))
+              (if bv
+                  (let ([trim (if (= 13 (bytevector-u8-ref bv (- num-read 2)))
+                                  (- num-read 2)
+                                  (- num-read 1))])
+                    (when (on-line (truncate-bytevector! bv trim))
+                      (uv/read-lines reader on-line)))
+                  (on-line #f)))))
 
   (define (uv/read-fully reader n on-done)
     (let ([bv (make-bytevector n)])
@@ -328,24 +348,28 @@
      (lambda (ok fail)
        (read-headers reader
                      (lambda (headers)
-                       (let* ([status (parse-status (car headers))]
-                              [headers (parse-headers (cdr headers))]
-                              [content-length (header->number headers "Content-Length")])
-                         (if content-length
-                             (uv/read-fully reader content-length
-                                            (lambda (body)
-                                              (ok (list status headers body))))
-                             (ok (list status headers #f)))))))))
+                       (if (pair? headers)
+                        (let* ([status (parse-status (car headers))]
+                               [headers (parse-headers (cdr headers))]
+                               [content-length (header->number headers "Content-Length")])
+                          (if content-length
+                              (uv/read-fully reader content-length
+                                             (lambda (body)
+                                               (ok (list status headers body))))
+                              (ok (list status headers #f))))
+                        (fail "eof")))))))
 
 
   (define (uv/close-stream stream)
     (letrec ([shutdown-req (make-req UV_SHUTDOWN)]
              [code (foreign-callable (lambda (req status)
                                        (unlock-object code)
+                                       (foreign-free shutdown-req)
                                        (handle-close stream nothing))
                                      (void* int)
                                      void)])
       (lock-object code)
+      (check (uv-read-stop stream))
       (check (uv-shutdown shutdown-req stream (foreign-callable-entry-point code)))))
 
 
@@ -428,30 +452,42 @@
                           (check (uv-tcp-init loop client))
                           (check (uv-accept server client))
                           (on-conn #f server client))
-                        (on-conn status server #f)))
+                        (begin
+                          (on-conn status server #f))))
                     (void* int)
                     void)])
       (lock-object code)
       (check (uv-tcp-init loop h))
       (check (uv-tcp-bind h (ftype-pointer-address s-addr) 0))
-      (check (uv-listen h 128 (foreign-callable-entry-point code)))
+      (check (uv-listen h 511 (foreign-callable-entry-point code)))
       (foreign-free (ftype-pointer-address s-addr))
       h))
 
   (define (uv/static-file-handler path)
     (lambda (err ok)
-      (format #t "static file handler wooo: ~a\n" ok)))
+      #f
+      ))
 
   (define (uv/write-http-request stream req)
-    (make-async
-     (lambda (ok fail)
-       (ok "hurray"))))
+    (uv/stream-write stream "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))
+
+  (define (keep-alive? req)
+    (let ([version (string=? "HTTP/1.1" (caddar req))]
+          [conn (header-value (cadr req) "Connection")])
+      (not (and (not version) conn (string=? "close" conn)))))
 
   (define (uv/serve-http stream handler)
-    ((async-do
-      (<- req (uv/read-http-response (uv/make-reader stream)))
-      (async-return req))
-     handler))
+    (let ((reader (uv/make-reader stream)))
+      (let lp ((times 0))
+        ((uv/read-http-response reader)
+         (lambda (err req)
+           (if err
+               (handler err #f)
+               ((uv/write-http-request stream req)
+                (lambda (err status)
+                  (if (keep-alive? req)
+                      (lp (+ times 1))
+                      (handler err status))))))))))
 
   (define (uv/make-http-request loop url on-done)
     ((async-do

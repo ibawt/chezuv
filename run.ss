@@ -26,11 +26,10 @@
     (lambda (loop)
       (uv/tcp-listen loop "0.0.0.0:6565"
                      (lambda (err . value)
-                       (format #t "err: ~a, conn: ~a, stream: ~a\n" err (car value) (cadr value))
                        (uv/serve-http (cadr value)
-                                      (uv/static-file-handler "./"))
+                                      (lambda (err ok)
+                                        (uv/close-stream (cadr value))))))
 
-                       ))
       (format #t "listening on 0.0.0:6565~n")
       ;; (call/cc
       ;;  (lambda (done)
