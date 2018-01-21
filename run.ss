@@ -28,7 +28,14 @@
                      (lambda (err . value)
                        (uv/serve-http (cadr value)
                                       (lambda (err ok)
-                                        (uv/close-stream (cadr value))))))
+                                        (format #t "END\n")
+                                        (uv/close-stream (cadr value))))
+                       ;; (uv/serve-tls (cadr value)
+                       ;;               (lambda (err ok)
+                       ;;                 (format #t "end\n")))
+                       )
+
+                     )
 
       (format #t "listening on 0.0.0:6565~n")
       ;; (call/cc

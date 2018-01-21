@@ -7,6 +7,7 @@
           uv/url-protocol
           uv/url-path
           uv/url-port
+          uv/serve-tls
           uv/close
           uv/stop
           uv/make-reader
@@ -24,7 +25,10 @@
 
   (define init
     (begin
-      (load-shared-object "libuv.dylib")))
+      (load-shared-object "libchezuv.dylib")
+      (load-shared-object "libuv.dylib")
+      ((foreign-procedure "init_ssl" () void))
+      ))
 
   ;; --------------------------------------------------------------------------------
   ;; Private
@@ -267,6 +271,24 @@
         (set! num-reads (+ 1 num-reads))
         x)))
 
+  (define (uv/stream-read-raw stream cb)
+    (letrec ([code (foreign-callable
+                    (lambda (s nb buf)
+                      (check (uv-read-stop stream))
+                      ;; (format #t "stream-read-raw nb: ~a\n" nb)
+                      (if (negative? nb)
+                          (begin
+                            (unlock-object code)
+                            (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                            (cb #f #f))
+                          (begin
+                            (unlock-object code)
+                            (cb nb buf))))
+                    (void* ssize_t (* uv-buf))
+                    void)])
+      (lock-object code)
+      (check (uv-read-start stream alloc-buffer (foreign-callable-entry-point code)))))
+
   (define (uv/stream-read stream cb)
     (letrec ([code (foreign-callable
                     (lambda (s nb buf)
@@ -286,7 +308,7 @@
       (lock-object code)
       (check (uv-read-start stream alloc-buffer (foreign-callable-entry-point code)))))
 
-  (define (uv/make-reader stream)
+  (define (uv/make-reader stream reader)
     (define buf #f)
     (define read-pos 0)
     (define buf-len 0)
@@ -307,7 +329,7 @@
     (lambda (bv start len on-read)
       (if buf
           (send-buf bv start len on-read)
-          (uv/stream-read stream
+          (reader stream
                        (lambda (s b)
                          (if s
                              (begin
@@ -348,6 +370,7 @@
      (lambda (ok fail)
        (read-headers reader
                      (lambda (headers)
+                       ;; (format #t "read headers\n")
                        (if (pair? headers)
                         (let* ([status (parse-status (car headers))]
                                [headers (parse-headers (cdr headers))]
@@ -463,13 +486,105 @@
       (foreign-free (ftype-pointer-address s-addr))
       h))
 
+  (define new-ssl-context
+    (foreign-procedure "new_ssl_context"
+                       (string string)
+                       void*))
+
+  (define new-ssl-client
+    (foreign-procedure "new_ssl_client"
+                       (void*)
+                       void*))
+
+
+  (define fill-input-buffer
+    (foreign-procedure "fill_input_buffer"
+                       (void* void* int)
+                       int))
+
+  (define drain-output-buffer
+    (foreign-procedure "drain_output_buffer"
+                       (void* void* int)
+                       int))
+
+  (define do-handshake
+    (foreign-procedure "do_handshake"
+                       (void*)
+                       int))
+
+  (define ssl-read
+    (foreign-procedure "ssl_read"
+                       (void* void* int)
+                       int))
+
+  (define ssl-write
+    (foreign-procedure "ssl_write"
+                       (void* void* int)
+                       int))
+
+  (define (ssl-output-buffer client)
+    (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
+           [base (foreign-alloc (* 64 1024))]
+           [n (drain-output-buffer client base (* 64 1024))])
+      (format #t "drain-output-buffer: ~a\n" n)
+      (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 base))
+      (ftype-set! uv-buf (len) buf n)
+      buf))
+
+  ;; to be passed to make-reader
+  (define (make-tls-reader client reader)
+    (letrec ([fn (lambda (stream on-read)
+                   (reader stream
+                           (lambda (nb buf)
+                             (if (or (not nb) (negative? nb))
+                                 (on-read #f #f)
+                                 (begin
+                                   (fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)
+                                   (let ([x (do-handshake client)])
+                                     (if (not (= 0 x))
+                                         ((uv/stream-write stream (ssl-output-buffer client))
+                                          (lambda (err ok)
+                                            (fn stream on-read)))
+                                         (let* ([buf (get-buf)]
+                                                [n (ssl-read client buf 65535)])
+                                           (if (positive? n)
+                                               (let ([bv (make-bytevector n)])
+                                                 (memcpy bv buf n)
+                                                 (free-buf buf)
+                                                 (on-read stream bv))
+                                               (begin
+                                                 ((uv/stream-write stream (ssl-output-buffer client))
+                                                  (lambda (err ok)
+                                                    (fn stream on-read)))))))))))))])
+      fn))
+
+  (define (make-tls-writer client writer stream)
+    (lambda (buf)
+      (make-async
+       (lambda (ok fail)
+         (let* ([buf (if (string? buf) (string->buf buf) buf)]
+                [n (ssl-write client
+                              (ftype-pointer-address (ftype-ref uv-buf (base) buf))
+                              (ftype-ref uv-buf (len) buf))])
+           (if (positive? n)
+               ((uv/stream-write stream (ssl-output-buffer client))
+                (lambda (err value)
+                  (ok value)))))))))
+
+  (define (uv/serve-tls stream)
+    (let* ([ctx (new-ssl-context "cert.pem" "key.pem")]
+           [client (new-ssl-client ctx)])
+      (values
+       (make-tls-reader client uv/stream-read-raw)
+       (make-tls-writer client uv/stream-write stream))))
+
   (define (uv/static-file-handler path)
     (lambda (err ok)
       #f
       ))
 
-  (define (uv/write-http-request stream req)
-    (uv/stream-write stream "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))
+  (define (uv/write-http-request writer req)
+    (writer "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))
 
   (define (keep-alive? req)
     (let ([version (string=? "HTTP/1.1" (caddar req))]
@@ -477,17 +592,18 @@
       (not (and (not version) conn (string=? "close" conn)))))
 
   (define (uv/serve-http stream handler)
-    (let ((reader (uv/make-reader stream)))
-      (let lp ((times 0))
-        ((uv/read-http-response reader)
-         (lambda (err req)
-           (if err
-               (handler err #f)
-               ((uv/write-http-request stream req)
-                (lambda (err status)
-                  (if (keep-alive? req)
-                      (lp (+ times 1))
-                      (handler err status))))))))))
+    (let-values ([(tls-reader tls-writer) (uv/serve-tls stream)])
+      (let ([reader (uv/make-reader stream tls-reader)])
+        (let lp ([times 0])
+          ((uv/read-http-response reader)
+           (lambda (err req)
+             (if err
+                 (handler err #f)
+                 ((uv/write-http-request tls-writer req)
+                  (lambda (err status)
+                    (if (keep-alive? req)
+                        (lp (+ times 1))
+                        (handler err status)))))))))))
 
   (define (uv/make-http-request loop url on-done)
     ((async-do
@@ -495,7 +611,7 @@
       (<- stream (uv/tcp-connect loop (addr->sockaddr addr (uv/url-port url))))
       (<- status (uv/stream-write stream (format #f "GET ~a HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n" (uv/url-path url)
                                                  (uv/url-host url))))
-      (<- resp (uv/read-http-response (uv/make-reader stream)))
+      (<- resp (uv/read-http-response (uv/make-reader stream uv/stream-read)))
       (handle-close stream nothing)
       (async-return resp))
      on-done)))
