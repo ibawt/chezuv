@@ -15,6 +15,7 @@ typedef struct {
 ssl_client* new_ssl_client(SSL_CTX* ctx)
 {
   ssl_client *sc = malloc(sizeof(ssl_client));
+  memset(sc, 0, sizeof(ssl_client));
 
   sc->reader = BIO_new(BIO_s_mem());
   sc->writer = BIO_new(BIO_s_mem());
@@ -26,13 +27,18 @@ ssl_client* new_ssl_client(SSL_CTX* ctx)
   return sc;
 }
 
+static int clamp(int x)
+{
+  return x < 0 ? 0 : x; 
+}
+
 int fill_input_buffer(ssl_client *c, char *b, int len)
 {
   int n;
   int bytes_read = 0;
 
   do {
-    n = BIO_write(c->reader, b + bytes_read, len - bytes_read);
+    n = BIO_write(c->reader, b + bytes_read, clamp(len - bytes_read));
     if(n > 0) {
       bytes_read += n;
     }
@@ -47,7 +53,7 @@ int drain_output_buffer(ssl_client *c, char *b, int len)
   int bytes_written = 0;
 
   do {
-    n = BIO_read(c->writer, b + bytes_written, len - bytes_written);
+    n = BIO_read(c->writer, b + bytes_written, clamp(len - bytes_written));
     if(n > 0) {
       bytes_written += n;
     } else if (!BIO_should_retry(c->writer)) {
@@ -75,12 +81,10 @@ int do_handshake(ssl_client *c)
   case SSL_ERROR_WANT_READ:
     return DRAIN_OUTPUT_BUFFER;
   case SSL_ERROR_NONE:
-    printf("no error\n");
     break;
   case SSL_ERROR_ZERO_RETURN:
   case SSL_ERROR_SYSCALL:
   default:
-    printf("default\n");
     return -1;
   }
   return 0;
@@ -92,7 +96,7 @@ int ssl_read(ssl_client *c, char *b, int len)
   int bytes_read = 0;
   int n;
   do {
-    n = SSL_read(c->ssl, b + bytes_read, len - bytes_read);
+    n = SSL_read(c->ssl, b + bytes_read, clamp(len - bytes_read));
     if( n > 0 ) {
       bytes_read += n;
     }
@@ -104,11 +108,9 @@ int ssl_read(ssl_client *c, char *b, int len)
     case SSL_ERROR_NONE:
       break;
     case SSL_ERROR_WANT_READ:
-      printf("want read, bytes_read: %d\n", bytes_read);
       return bytes_read == 0 ? DRAIN_OUTPUT_BUFFER : bytes_read;
-      case SSL_ERROR_WANT_WRITE:
-        printf("want write\n");
-        return DRAIN_OUTPUT_BUFFER;
+    case SSL_ERROR_WANT_WRITE:
+      return DRAIN_OUTPUT_BUFFER;
     }
   }
   return bytes_read;
@@ -120,7 +122,7 @@ int ssl_write(ssl_client *c, char *b, int len)
   int n;
 
   do {
-    n = SSL_write(c->ssl, b + bytes_written, len - bytes_written);
+    n = SSL_write(c->ssl, b + bytes_written, clamp(len - bytes_written));
     if (n > 0 ) {
       bytes_written += n;
     }
@@ -175,6 +177,11 @@ SSL_CTX* new_ssl_context(const char* cert, const char* key)
   return NULL;
 }
 
+void free_ssl_context(SSL_CTX* ssl)
+{
+  SSL_CTX_free(ssl);
+}
+
 void init_ssl(void)
 {
   SSL_library_init();
@@ -182,7 +189,5 @@ void init_ssl(void)
   SSL_load_error_strings();
   ERR_load_BIO_strings();
   ERR_load_crypto_strings();
-
-  printf("SSL inited\n");
 }
 

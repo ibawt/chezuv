@@ -4,7 +4,7 @@
 # OBJ+=$(SRC:.sls=.so)
 
 # SCHEME_FLAGS := --optimize-level 3
-CFLAGS := -I/usr/local/opt/openssl@1.1/include -L/usr/local/opt/openssl@1.1/lib -lssl -lcrypto -Wall
+CFLAGS := -I/usr/local/opt/openssl@1.1/include -L/usr/local/opt/openssl@1.1/lib -lssl -lcrypto -Wall -O2
 all: libchezuv.dylib
 
 clean:

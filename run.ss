@@ -24,18 +24,13 @@
   (time
    (uv/with-loop
     (lambda (loop)
-      (uv/tcp-listen loop "0.0.0.0:6565"
-                     (lambda (err . value)
-                       (uv/serve-http (cadr value)
-                                      (lambda (err ok)
-                                        (format #t "END\n")
-                                        (uv/close-stream (cadr value))))
-                       ;; (uv/serve-tls (cadr value)
-                       ;;               (lambda (err ok)
-                       ;;                 (format #t "end\n")))
-                       )
-
-                     )
+      (uv/call-with-ssl-context "cert.pem" "key.pem"
+       (lambda (ctx on-done)
+         (uv/tcp-listen loop "0.0.0.0:6565"
+                        (lambda (err . value)
+                          (uv/serve-https ctx (cadr value)
+                                          (lambda (err ok)
+                                            (uv/close-stream (cadr value))))))))
 
       (format #t "listening on 0.0.0:6565~n")
       ;; (call/cc
@@ -55,4 +50,4 @@
       ;;                                    (done loop)))))
       ;;        (if (< n 1000)
       ;;            (top (+ 1 n)))))))
-      (format #t "exiting...~n")))))
+      ))))
