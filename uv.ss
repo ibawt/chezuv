@@ -7,7 +7,6 @@
           uv/url-protocol
           uv/url-path
           uv/url-port
-          uv/serve-tls
           uv/close
           uv/stop
           uv/make-reader
@@ -19,6 +18,7 @@
           uv/make-idle
           uv/serve-http
           uv/serve-https
+          uv/ssl-server
           uv/call-with-ssl-context
           uv/static-file-handler
           uv/getaddrinfo)
@@ -562,7 +562,7 @@
                                                  ((uv/stream-write stream (ssl-output-buffer client))
                                                   (lambda (err ok)
                                                     (fn on-read)))))))))))))])
-      fn))
+      (uv/make-reader stream fn)))
 
   (define (make-tls-writer client writer stream)
     (lambda (buf)
@@ -575,12 +575,14 @@
            (if (positive? n)
                ((uv/stream-write stream (ssl-output-buffer client))
                 (lambda (err value)
-                  (ok value)))))))))
+                  (ok value)))
+               (fail n)))))))
 
-  (define (uv/serve-tls stream)
-    ;; TODO: fix this now 
-    #f
-    )
+  (define (uv/ssl-server ctx stream)
+    (let* ([client (new-ssl-client ctx)]
+           [reader (make-tls-reader client uv/stream-read-raw stream)]
+           [writer (make-tls-writer client uv/stream-write stream)])
+      (values client reader writer)))
 
   (define (uv/static-file-handler path)
     (lambda (err ok)
@@ -606,25 +608,25 @@
               (free-ssl-context ctx)))))
 
   (define (uv/serve-https ctx stream on-done)
-    (let* ([client (new-ssl-client ctx)]
-           [reader (uv/make-reader stream (make-tls-reader client uv/stream-read-raw stream))]
-           [writer (make-tls-writer client uv/stream-write stream)])
-      (uv/serve-http reader writer
-                     (lambda (err status)
-                       (free-ssl-client client)
-                       (on-done err status)))))
+    (let-values (([client reader writer] (uv/ssl-server ctx stream)))
+      (serve-http reader writer
+                  (lambda (err status)
+                    (free-ssl-client client)
+                    (on-done err status)))))
 
-  (define (uv/serve-http reader writer on-done)
-    (let lp ()
-      ((uv/read-http-response reader)
-       (lambda (err req)
-         (if err
-             (on-done err #f)
-             ((uv/write-http-request writer req)
-              (lambda (err status)
-                (if (keep-alive? req)
-                    (lp)
-                    (on-done err status)))))))))
+  (define (serve-http reader writer on-done)
+    ((async-do
+      (<- req (uv/read-http-response reader))
+      (<- status (uv/write-http-request writer req))
+      (if (keep-alive? req)
+          (serve-http reader writer on-done)
+          (async-return status)))
+     on-done))
+
+  (define (uv/serve-http stream on-done)
+    (serve-http (uv/make-reader stream (lambda (b) (uv/stream-read stream b)))
+                (lambda (buf) (uv/stream-write stream buf))
+                on-done))
 
   (define (uv/make-http-request loop url on-done)
     ((async-do

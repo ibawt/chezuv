@@ -26,13 +26,16 @@
     (lambda (loop)
       (uv/call-with-ssl-context "cert.pem" "key.pem"
        (lambda (ctx on-done)
-         (uv/tcp-listen loop "0.0.0.0:6565"
+         (uv/tcp-listen loop "127.0.0.1:8443"
                         (lambda (err . value)
                           (uv/serve-https ctx (cadr value)
                                           (lambda (err ok)
                                             (uv/close-stream (cadr value))))))))
-
-      (format #t "listening on 0.0.0:6565~n")
+       (uv/tcp-listen loop "127.0.0.1:8080"
+                      (lambda (err . value)
+                        (uv/serve-http (cadr value)
+                                       (lambda (err ok)
+                                         (uv/close-stream (cadr value))))))
       ;; (call/cc
       ;;  (lambda (done)
       ;;    (let ([rx 0]
