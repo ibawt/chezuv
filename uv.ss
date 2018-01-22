@@ -126,7 +126,7 @@
   (define (string->buf s)
     (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
            [bytes (string->utf8 s)]
-           [b (foreign-alloc (bytevector-length bytes))])
+           [b (get-buf)])
       (bytevector-for-each
        (lambda (x i)
          (foreign-set! 'unsigned-8 b i x))
@@ -247,7 +247,6 @@
       (lock-object code)
       (uv-idle-start idle (foreign-callable-entry-point code))))
 
-
   (define (uv/stream-write stream s)
     (make-async
      (lambda (ok fail)
@@ -255,7 +254,7 @@
                 [write-req (make-req UV_WRITE)]
                 [code (foreign-callable
                        (lambda (req status)
-                         (free-uv-buf buf)
+                         (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
                          (foreign-free write-req)
                          (unlock-object code)
                          (if (= 0 status)
@@ -265,13 +264,6 @@
                        void)])
          (lock-object code)
          (check (uv-write write-req stream buf 1 (foreign-callable-entry-point code)))))))
-
-  (define num-reads 0)
-  (define get-next-read-id
-    (lambda ()
-      (let ([x num-reads])
-        (set! num-reads (+ 1 num-reads))
-        x)))
 
   (define (uv/stream-read-raw stream cb)
     (letrec ([code (foreign-callable
@@ -528,7 +520,7 @@
 
   (define (ssl-output-buffer client)
     (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
-           [base (foreign-alloc (* 64 1024))]
+           [base (get-buf)]
            [n (drain-output-buffer client base (* 64 1024))])
       (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 base))
       (ftype-set! uv-buf (len) buf n)
@@ -537,7 +529,6 @@
   (define (not= . args)
     (not (apply = args)))
 
-  ;; to be passed to make-reader
   (define (make-tls-reader client reader stream)
     (letrec ([fn (lambda (on-read)
                    (reader stream
@@ -559,6 +550,7 @@
                                                  (free-buf buf)
                                                  (on-read stream bv))
                                                (begin
+                                                 (free-buf buf)
                                                  ((uv/stream-write stream (ssl-output-buffer client))
                                                   (lambda (err ok)
                                                     (fn on-read)))))))))))))])
@@ -607,13 +599,6 @@
             (lambda (err ok)
               (free-ssl-context ctx)))))
 
-  (define (uv/serve-https ctx stream on-done)
-    (let-values (([client reader writer] (uv/ssl-server ctx stream)))
-      (serve-http reader writer
-                  (lambda (err status)
-                    (free-ssl-client client)
-                    (on-done err status)))))
-
   (define (serve-http reader writer on-done)
     ((async-do
       (<- req (uv/read-http-response reader))
@@ -622,6 +607,13 @@
           (serve-http reader writer on-done)
           (async-return status)))
      on-done))
+
+  (define (uv/serve-https ctx stream on-done)
+    (let-values (([client reader writer] (uv/ssl-server ctx stream)))
+      (serve-http reader writer
+                  (lambda (err status)
+                    (free-ssl-client client)
+                    (on-done err status)))))
 
   (define (uv/serve-http stream on-done)
     (serve-http (uv/make-reader stream (lambda (b) (uv/stream-read stream b)))
