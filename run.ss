@@ -24,33 +24,37 @@
   (time
    (uv/with-loop
     (lambda (loop)
-      (uv/call-with-ssl-context "cert.pem" "key.pem"
+      (uv/call-with-ssl-context #f #f #t
+                                (lambda (ctx on-done)
+                                  (call/cc
+                                   (lambda (done)
+                                     (let ([rx 0]
+                                           [url (uv/string->url "https://localhost:9090")])
+                                       (let top ((n 0))
+                                         (uv/make-https-request loop ctx url
+                                                                (lambda (err ok)
+                                                                  (format #t "err: ~a\n" err)
+                                                                  (format #t "ok: ~a\n" ok)
+                                                                  (set! rx (+ 1 rx))
+                                                                  (if (or err (>= rx 1000))
+                                                                      (begin
+                                                                        (format #t "stopping loop at 1000\n")
+                                                                        (done)))))
+                                         (if (< n 0)
+                                             (top (+ 1 n)))))))))
+      (uv/call-with-ssl-context "cert.pem" "key.pem" #f
        (lambda (ctx on-done)
          (uv/tcp-listen loop "127.0.0.1:8443"
                         (lambda (err . value)
                           (uv/serve-https ctx (cadr value)
                                           (lambda (err ok)
-                                            (uv/close-stream (cadr value))))))))
+                                            (uv/close-stream (cadr value))))))
+         ))
        (uv/tcp-listen loop "127.0.0.1:8080"
                       (lambda (err . value)
                         (uv/serve-http (cadr value)
                                        (lambda (err ok)
                                          (uv/close-stream (cadr value))))))
-      ;; (call/cc
-      ;;  (lambda (done)
-      ;;    (let ([rx 0]
-      ;;          [url (string->url "http://localhost:8080")])
-      ;;      (let top ((n 0))
-      ;;        (ideal-http-request loop url
-      ;;                            (lambda (err ok)
-      ;;                              (format #t "err: ~a\n" err)
-      ;;                              (format #t "ok: ~a\n" ok)
-      ;;                              (set! rx (+ 1 rx))
-      ;;                              (if (>= rx 1000)
-      ;;                                  (begin
-      ;;                                    (format #t "stopping loop at 1000\n")
-      ;;                                    (stop loop)
-      ;;                                    (done loop)))))
-      ;;        (if (< n 1000)
-      ;;            (top (+ 1 n)))))))
-      ))))
+
+       )
+    )))

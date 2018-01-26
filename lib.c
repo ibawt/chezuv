@@ -6,13 +6,36 @@
 #include <openssl/ssl.h>
 #include "uv.h"
 
+#define ERROR -1
+#define DRAIN_OUTPUT_BUFFER -2
+#define FILL_INPUT_BUFFER -3
+
 typedef struct {
   SSL *ssl;
   BIO *reader;
   BIO *writer;
 } ssl_client;
 
-ssl_client* new_ssl_client(SSL_CTX* ctx)
+static int translate_ssl_error(SSL* ssl, int n)
+{
+  fflush(stdout);
+  int e = SSL_get_error(ssl, n);
+  printf("ssl_error: %d\n", e);
+  switch(e) {
+  case SSL_ERROR_NONE:
+    return 0;
+  case SSL_ERROR_WANT_READ:
+    printf("WANT a READ\n");
+    return FILL_INPUT_BUFFER;
+  case SSL_ERROR_WANT_WRITE:
+    printf("WANT A WRITE\n");
+    return DRAIN_OUTPUT_BUFFER;
+  }
+  printf("er default e = %d\n", e);
+  return -1;
+}
+
+ssl_client* new_ssl_client(SSL_CTX* ctx, int client)
 {
   ssl_client *sc = malloc(sizeof(ssl_client));
   memset(sc, 0, sizeof(ssl_client));
@@ -21,11 +44,16 @@ ssl_client* new_ssl_client(SSL_CTX* ctx)
   sc->writer = BIO_new(BIO_s_mem());
   sc->ssl = SSL_new(ctx);
 
-  SSL_set_accept_state(sc->ssl);
+  if(client) {
+    SSL_set_connect_state(sc->ssl);
+  } else {
+    SSL_set_accept_state(sc->ssl);
+  }
   SSL_set_bio(sc->ssl, sc->reader, sc->writer);
 
   return sc;
 }
+
 
 static int clamp(int x)
 {
@@ -64,30 +92,30 @@ int drain_output_buffer(ssl_client *c, char *b, int len)
   return bytes_written;
 }
 
-#define DRAIN_OUTPUT_BUFFER -2
-#define HANDSHAKE_OK 0
-
-int do_handshake(ssl_client *c)
+int ssl_connect(ssl_client *c)
 {
+  int n;
+
+  if(!SSL_in_connect_init(c->ssl)) {
+    return 0;
+  }
+
+  n = SSL_connect(c->ssl);
+  printf("ssl_connect: %d\n", n);
+  fflush(stdout);
+  return (n < 0 ) ? translate_ssl_error(c->ssl, n) : n;
+}
+
+int ssl_accept(ssl_client *c)
+{
+  int n;
+
   if(SSL_is_init_finished(c->ssl)) {
-    return HANDSHAKE_OK;
+    return 1;
   }
 
-  int n = SSL_accept(c->ssl);
-
-  int ssl_err = SSL_get_error(c->ssl, n);
-
-  switch(ssl_err) {
-  case SSL_ERROR_WANT_READ:
-    return DRAIN_OUTPUT_BUFFER;
-  case SSL_ERROR_NONE:
-    break;
-  case SSL_ERROR_ZERO_RETURN:
-  case SSL_ERROR_SYSCALL:
-  default:
-    return -1;
-  }
-  return 0;
+  n = SSL_accept(c->ssl);
+  return (n < 0 ) ? translate_ssl_error(c->ssl, n) : n;
 }
 
 
@@ -102,15 +130,10 @@ int ssl_read(ssl_client *c, char *b, int len)
     }
   } while( n > 0);
 
-  if( n < 0 ) {
-    int ssl_err = SSL_get_error(c->ssl, n);
-    switch(ssl_err) {
-    case SSL_ERROR_NONE:
-      break;
-    case SSL_ERROR_WANT_READ:
-      return bytes_read == 0 ? DRAIN_OUTPUT_BUFFER : bytes_read;
-    case SSL_ERROR_WANT_WRITE:
-      return DRAIN_OUTPUT_BUFFER;
+  if( n < 0 && bytes_read == 0 ) {
+    int ssl_err = translate_ssl_error(c->ssl, n);
+    if(ssl_err < 0 ) {
+      return ssl_err;
     }
   }
   return bytes_read;
@@ -127,15 +150,10 @@ int ssl_write(ssl_client *c, char *b, int len)
       bytes_written += n;
     }
   } while( n > 0);
-  if( n < 0 ) {
-    int ssl_err = SSL_get_error(c->ssl, n);
-    switch(ssl_err) {
-    case SSL_ERROR_NONE:
-      break;
-    case SSL_ERROR_WANT_READ:
-      return bytes_written == 0 ? DRAIN_OUTPUT_BUFFER : bytes_written;
-    case SSL_ERROR_WANT_WRITE:
-      return DRAIN_OUTPUT_BUFFER;
+  if( n < 0 && bytes_written == 0) {
+    int ssl_err = translate_ssl_error(c->ssl, n);
+    if(ssl_err < 0 ) {
+      return ssl_err;
     }
   }
 
@@ -149,24 +167,26 @@ void free_ssl_client(ssl_client *c)
   free(c);
 }
 
-SSL_CTX* new_ssl_context(const char* cert, const char* key)
+SSL_CTX* new_ssl_context(const char* cert, const char* key, int client)
 {
-  SSL_CTX *ctx = SSL_CTX_new(SSLv23_server_method());
+  SSL_CTX *ctx = SSL_CTX_new( client ? SSLv23_method() : SSLv23_server_method());
   if (!ctx) {
     return NULL;
   }
 
-  int err = SSL_CTX_use_certificate_file(ctx, cert, SSL_FILETYPE_PEM);
-  if (err != 1) {
-    goto CLEAN_UP;
-  }
-  err = SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM);
-  if( err != 1 ) {
-    goto CLEAN_UP;
-  }
+  if( cert && key ) {
+    int err = SSL_CTX_use_certificate_file(ctx, cert, SSL_FILETYPE_PEM);
+    if (err != 1) {
+      goto CLEAN_UP;
+    }
+    err = SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM);
+    if( err != 1 ) {
+      goto CLEAN_UP;
+    }
 
-  if( SSL_CTX_check_private_key(ctx) != 1) {
-    goto CLEAN_UP;
+    if( SSL_CTX_check_private_key(ctx) != 1) {
+      goto CLEAN_UP;
+    }
   }
 
   SSL_CTX_set_options(ctx, SSL_OP_ALL|SSL_OP_NO_SSLv2|SSL_OP_NO_SSLv3);
