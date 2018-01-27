@@ -18,26 +18,24 @@ typedef struct {
 
 static int translate_ssl_error(SSL* ssl, int n)
 {
-  fflush(stdout);
   int e = SSL_get_error(ssl, n);
-  printf("ssl_error: %d\n", e);
   switch(e) {
   case SSL_ERROR_NONE:
     return 0;
   case SSL_ERROR_WANT_READ:
-    printf("WANT a READ\n");
     return FILL_INPUT_BUFFER;
   case SSL_ERROR_WANT_WRITE:
-    printf("WANT A WRITE\n");
     return DRAIN_OUTPUT_BUFFER;
   }
-  printf("er default e = %d\n", e);
   return -1;
 }
 
 ssl_client* new_ssl_client(SSL_CTX* ctx, int client)
 {
   ssl_client *sc = malloc(sizeof(ssl_client));
+  if(!sc) {
+    return sc;
+  }
   memset(sc, 0, sizeof(ssl_client));
 
   sc->reader = BIO_new(BIO_s_mem());
@@ -101,8 +99,6 @@ int ssl_connect(ssl_client *c)
   }
 
   n = SSL_connect(c->ssl);
-  printf("ssl_connect: %d\n", n);
-  fflush(stdout);
   return (n < 0 ) ? translate_ssl_error(c->ssl, n) : n;
 }
 
@@ -115,7 +111,7 @@ int ssl_accept(ssl_client *c)
   }
 
   n = SSL_accept(c->ssl);
-  return (n < 0 ) ? translate_ssl_error(c->ssl, n) : n;
+  return (n <= 0 ) ? translate_ssl_error(c->ssl, n) : n;
 }
 
 

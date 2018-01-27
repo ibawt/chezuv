@@ -48,13 +48,11 @@
                         (lambda (err . value)
                           (uv/serve-https ctx (cadr value)
                                           (lambda (err ok)
-                                            (uv/close-stream (cadr value))))))
-         ))
-       (uv/tcp-listen loop "127.0.0.1:8080"
-                      (lambda (err . value)
-                        (uv/serve-http (cadr value)
-                                       (lambda (err ok)
-                                         (uv/close-stream (cadr value))))))
-
-       )
+                                            (format #t "in run.ss\n")
+                                            (uv/close-stream (cadr value))))))))
+      (uv/tcp-listen loop "127.0.0.1:8080"
+                     (lambda (err . value)
+                       (uv/serve-http (cadr value)
+                                      (lambda (err ok)
+                                        (uv/close-stream (cadr value)))))))
     )))
