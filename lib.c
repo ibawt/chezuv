@@ -55,7 +55,7 @@ ssl_client* new_ssl_client(SSL_CTX* ctx, int client)
 
 static int clamp(int x)
 {
-  return x < 0 ? 0 : x; 
+  return x < 0 ? 0 : x;
 }
 
 int fill_input_buffer(ssl_client *c, char *b, int len)
@@ -191,6 +191,12 @@ SSL_CTX* new_ssl_context(const char* cert, const char* key, int client)
  CLEAN_UP:
   SSL_CTX_free(ctx);
   return NULL;
+}
+
+int ssl_shutdown(ssl_client *c)
+{
+  int n = SSL_shutdown(c->ssl);
+  return (n < 0 ) ? translate_ssl_error(c->ssl, n) : n;
 }
 
 void free_ssl_context(SSL_CTX* ssl)

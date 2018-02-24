@@ -1,4 +1,4 @@
-#! /usr/bin/env scheme -q --debug-on-exception --libdirs vendor:. --import-notify --compile-imported-libraries
+#! /usr/bin/env scheme -q --debug-on-exception --libdirs vendor:. --compile-imported-libraries
 
 ;; (profile-load-data "profile")
 (parameterize ([compile-profile 'source])

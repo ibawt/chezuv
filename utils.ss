@@ -27,19 +27,10 @@
 (define (dec x)
   (- x 1))
 
-(define memset
-  (foreign-procedure "memset"
-                     (void* int size_t)
-                     void))
-
 (define memcpy
   (foreign-procedure "memcpy"
                      (u8* void* int)
                      void*))
-
-(define (logz fmt . args)
-  (apply format #t fmt args)
-  (newline))
 
 (define (find-char-by str f pos)
   (let loop ([pos pos])
@@ -95,16 +86,6 @@
       (loop (+ 1 pos)
             (+ 1 pos)
             (cons (substring s start pos) words))))))
-
-    ;; (if (>= pos (string-length s))
-    ;;     (reverse (cons (substring s start (string-length s)) words))
-    ;;     (if (not (char=? delim (string-ref s pos)))
-    ;;         (loop (+ 1 pos)
-    ;;               start
-    ;;               words)
-    ;;         (loop (+ 1 pos)
-    ;;               (+ 1 pos)
-    ;;               (cons (substring s start pos) words))))
 
 (define (find-char str ch pos)
   (let loop ([pos pos])

@@ -23,13 +23,14 @@
           uv/static-file-handler
           uv/getaddrinfo)
   (import (chezscheme)
+          (inet)
+          (libuv)
           (alloc)
           (irregex))
 
   (define init
     (begin
       (load-shared-object "libchezuv.dylib")
-      (load-shared-object "libuv.dylib")
       ((foreign-procedure "init_ssl" () void))))
 
   ;; --------------------------------------------------------------------------------
@@ -37,9 +38,7 @@
   ;; --------------------------------------------------------------------------------
 
   (include "monad.ss")
-  (include "inet.ss")
   (include "utils.ss")
-  (include "ffi.ss")
 
   (define (nothing . args)
     #f)
@@ -72,12 +71,6 @@
   (define (free-buf buf)
     (set! buf-pool (cons buf buf-pool)))
 
-  (define alloc-zero
-    (lambda (size)
-      (let ([p (foreign-alloc size)])
-        (memset p 0 size)
-        p)))
-
   (define strerror
     (lambda (x)
       (let* ([buf (make-bytevector 2048)]
@@ -89,11 +82,6 @@
   (define (handle-type-name handle)
     (uv-handle-type-name (uv-handle-get-type handle)))
 
-  (define (walk-handles uv-loop on-handle)
-    (let ([code (foreign-callable on-handle (void* void*) void)])
-      (lock-object code)
-      (uv-walk uv-loop (foreign-callable-entry-point code) 0)
-      (unlock-object code)))
 
   (define (register-signal-handlers uv-loop)
     (letrec ([sig-handle (make-handler UV_SIGNAL)]
@@ -142,18 +130,6 @@
       (ftype-set! uv-buf (len) buf (bytevector-length bytes))
       buf))
 
-  (define (handle-close h cb)
-    (when (= 0 (uv-is-closing h))
-      (letrec ([code (foreign-callable
-                      (lambda (h)
-                        (cb h)
-                        (foreign-free h)
-                        (unlock-object code))
-                      (void*)
-                      void)])
-
-        (lock-object code)
-        (uv-close h (foreign-callable-entry-point code)))))
 
   (define uv/close-handle handle-close)
 
@@ -294,14 +270,13 @@
     (letrec ([code (foreign-callable
                     (lambda (s nb buf)
                       (check (uv-read-stop stream))
+                      (unlock-object code)
                       (if (negative? nb)
                           (begin
-                            (unlock-object code)
                             (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
                             (cb #f #f))
                           (let ([p (make-bytevector nb)])
                             (memcpy p (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)
-                            (unlock-object code)
                             (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
                             (cb stream p))))
                   (void* ssize_t (* uv-buf))
@@ -339,15 +314,17 @@
                           (send-buf bv start len on-read))
                         (on-read #f #f)))))))
 
+  (define trim-newline!
+    (lambda (bv num-read)
+      (truncate-bytevector! bv
+                            (if (= 13 (bytevector-u8-ref bv (- num-read 2)))
+                                (- num-read 2) (- num-read 1)))))
+
   (define (uv/read-lines reader on-line)
     (reader (make-bytevector 1024) 0 'eol
             (lambda (bv num-read)
-              (if bv
-                  (let ([trim (if (= 13 (bytevector-u8-ref bv (- num-read 2)))
-                                  (- num-read 2)
-                                  (- num-read 1))])
-                    (when (on-line (truncate-bytevector! bv trim))
-                      (uv/read-lines reader on-line)))
+              (if (and bv (on-line (trim-newline! bv num-read)))
+                  (uv/read-lines reader on-line)
                   (on-line #f)))))
 
   (define (uv/read-fully reader n on-done)
@@ -394,7 +371,6 @@
       (check (uv-read-stop stream))
       (check (uv-shutdown shutdown-req stream (foreign-callable-entry-point code)))))
 
-
   (define (uv/tcp-connect loop addr)
     (make-async
      (lambda (ok fail)
@@ -412,7 +388,6 @@
          (check (uv-tcp-init loop socket))
          (check (uv-tcp-connect conn socket addr
                                 (foreign-callable-entry-point code)))))))
-
 
   (define (addr->sockaddr addr port)
     (let ([s (ftype-ref addrinfo (ai_addr) addr)])
@@ -547,24 +522,45 @@
           ((= 0 n) (fail "session closed"))
           ((or (= FILL_INPUT_BUFFER n)
                (= DRAIN_OUTPUT_BUFFER n))
-           (begin
-             (let ([buf (ssl-output-buffer client)])
-               (if (positive? (ftype-ref uv-buf (len) buf))
-                   ((uv/stream-write stream buf)
-                    (lambda (err ok)
-                      (foreign-free (ftype-pointer-address buf))
-                      (if err (fail err)
-                          (lp (fn)))))
-                   (begin
-                     (free-uv-buf buf)
-                     (uv/stream-read-raw stream
-                                        (lambda (nb buf)
-                                          (fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)
-                                          (lp (fn)))))))))
+           ;; OpenSSL seems to send back the wrong flag
+           ;; so we'll just see if there's anything to output
+           ;; if not then read something
+           (let ([buf (ssl-output-buffer client)])
+             (if (positive? (ftype-ref uv-buf (len) buf))
+                 ((uv/stream-write stream buf)
+                  (lambda (err ok)
+                    (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
+                    (if err (fail err)
+                        (lp (fn)))))
+                 (begin
+                   (free-uv-buf buf)
+                   (uv/stream-read-raw stream
+                                       (lambda (nb buf)
+                                         (if nb
+                                             (let ([n (fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
+                                               (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                                               (if (= n nb)
+                                                   (lp (fn))
+                                                   (fail n)))
+                                             (fail #f))))))))
            ((= -1 n) (fail n))
            ((> n 0) (ok n))
            (else
             (error 'idk "shouldn't get here!")))))))
+
+  (define ssl-shutdown
+    (foreign-procedure "ssl_shutdown"
+                       (void*)
+                       int))
+
+  (define (tls-shutdown tls stream)
+    (make-async
+     (lambda (ok fail)
+       ((check-ssl tls stream (lambda ()
+                                (ssl-shutdown tls)))
+        (lambda (err v)
+          (if err (fail err)
+              (ok v)))))))
 
   (define (make-tls-writer client stream)
     (lambda (buf)
@@ -633,6 +629,7 @@
     (let ([ctx (new-ssl-context cert key client?)])
         (fn ctx
             (lambda (err ok)
+              (info "freeing ssl context")
               (free-ssl-context ctx)))))
 
   (define (serve-http reader writer on-done)
@@ -667,6 +664,7 @@
       (<- status ((caddr client) (format #f "GET ~a HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n\r\n" (uv/url-path url)
                                          (uv/url-host url))))
       (<- resp (uv/read-http-response (cadr client)))
+      (<- done (tls-shutdown (car client) stream))
       (handle-close stream nothing)
       (free-ssl-client (car client))
       (async-return resp))
@@ -679,7 +677,7 @@
       (<- status (uv/stream-write stream (format #f "GET ~a HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n" (uv/url-path url)
                                                  (uv/url-host url))))
       (<- resp (uv/read-http-response (uv/make-reader stream uv/stream-read)))
-      (handle-close stream nothing)
+      (uv/close-stream stream)
       (async-return resp))
      on-done)))
 
