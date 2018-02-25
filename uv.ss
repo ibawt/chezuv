@@ -150,7 +150,8 @@
                  (lambda (line)
                    (if (or (not line) (= 0 (bytevector-length line)))
                        (begin
-                         (done (reverse lines))
+                         (if line
+                             (done (reverse lines)))
                          #f)
                        (begin
                          (set! lines (cons line lines))
@@ -352,9 +353,10 @@
                                [headers (parse-headers (cdr headers))]
                                [content-length (header->number headers "Content-Length")])
                           (if content-length
-                              (uv/read-fully reader content-length
-                                             (lambda (body)
-                                               (ok (list status headers body))))
+                              (begin
+                                (uv/read-fully reader content-length
+                                              (lambda (body)
+                                                (ok (list status headers body)))))
                               (ok (list status headers #t))))
                         (fail 'eof)))))))
 
@@ -629,7 +631,6 @@
     (let ([ctx (new-ssl-context cert key client?)])
         (fn ctx
             (lambda (err ok)
-              (info "freeing ssl context")
               (free-ssl-context ctx)))))
 
   (define (serve-http reader writer on-done)
@@ -651,10 +652,21 @@
                      (free-ssl-client (car tls))
                      (on-done err ok))))))
 
+  (define (partial fn x)
+    (lambda (args ...)
+      (apply fn x args)))
+
   (define (uv/serve-http stream on-done)
-    (serve-http (uv/make-reader stream (lambda (b) (uv/stream-read stream b)))
+    (serve-http (uv/make-reader stream (partial uv/stream-read stream))
                 (lambda (buf) (uv/stream-write stream buf))
                 on-done))
+
+  (define close-tls-client
+    (lambda (client)
+      (make-async
+       (lambda (ok fail)
+         (free-ssl-client client)
+         (ok #t)))))
 
   (define (uv/make-https-request loop ctx url on-done)
     ((async-do

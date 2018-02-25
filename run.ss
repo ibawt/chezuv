@@ -19,6 +19,7 @@
     (newline)
     (format #t "~a\n" (utf8->string body))))
 
+(define iterations 10)
 (define (run)
   (format #t "Running\n")
   (time
@@ -26,21 +27,21 @@
     (lambda (loop)
       (uv/call-with-ssl-context #f #f #t
                                 (lambda (ctx on-done)
-                                  (call/cc
-                                   (lambda (done)
-                                     (let ([rx 0]
-                                           [url (uv/string->url "https://localhost:9090")])
-                                       (let top ((n 0))
-                                         (uv/make-https-request loop ctx url
-                                                                (lambda (err ok)
-                                                                  (format #t "err: ~a\n" err)
-                                                                  (format #t "ok: ~a\n" ok)
-                                                                  (set! rx (+ 1 rx))
-                                                                  (if (or err (>= rx 0))
-                                                                      (begin
-                                                                        (format #t "exiting...")
-                                                                        (on-done err ok)))))
-                                         (if (< n 0)
+                                  (let ([rx 0]
+                                        [url (uv/string->url "https://localhost:9090")])
+                                    (let top ((n 0))
+                                      (format #t "top\n")
+                                      (uv/make-https-request loop ctx url
+                                                             (lambda (err ok)
+                                                               (format #t "err: ~a\n" err)
+                                                               (format #t "ok: ~a\n" ok)
+                                                               (format #t "rx: ~a\n" rx)
+                                                               (set! rx (+ 1 rx))
+                                                               (if (or err (> rx iterations))
+                                                                   (begin
+                                                                     (format #t "iterations: ~a, rx: ~a\n" iterations rx)
+                                                                     (on-done err ok)))))
+                                         (if (< n iterations)
                                              (top (+ 1 n)))))))))
       ;; (uv/call-with-ssl-context "cert.pem" "key.pem" #f
       ;;  (lambda (ctx on-done)
@@ -57,4 +58,4 @@
       ;;                                   (uv/close-stream (cadr value))))))
 
       )
-    )))
+    )
