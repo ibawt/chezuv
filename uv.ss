@@ -20,7 +20,6 @@
           uv/make-http-request
           uv/make-https-request
           uv/call-with-ssl-context
-          uv/static-file-handler
           uv/getaddrinfo)
   (import (chezscheme)
           (inet)
@@ -170,8 +169,7 @@
         raw))
 
  (define (parse-status status-line)
-   (let ([splits (string-split (utf8->string status-line) #\space)])
-     splits))
+   (string-split (utf8->string status-line) #\space))
 
   (define (uv/close loop)
     (uv-stop loop)
@@ -613,11 +611,6 @@
                           (make-tls-reader client stream)
                           (make-tls-writer client stream))))))))))
 
-
-  (define (uv/static-file-handler path)
-    (lambda (err ok)
-      #f
-      ))
 
   (define (uv/write-http-request writer req)
     (writer "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))
