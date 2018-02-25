@@ -658,7 +658,7 @@
 
   (define (uv/serve-http stream on-done)
     (serve-http (uv/make-reader stream (partial uv/stream-read stream))
-                (lambda (buf) (uv/stream-write stream buf))
+                (partial uv/stream-write stream)
                 on-done))
 
   (define close-tls-client
