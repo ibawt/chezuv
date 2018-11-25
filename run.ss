@@ -12,11 +12,13 @@
 
 (define display-http-request
   (lambda (status headers body)
-    (format #t "[~a] Status: ~a\n" 0 status)
+    (format #t "Status:\n ~a\n" status)
+    (format #t "Headers:\n")
     (for-each (lambda (h)
                 (format #t "~a: ~a\n" (car h) (cadr h)))
               headers)
     (newline)
+    (format #t "Body:\n")
     (format #t "~a\n" (utf8->string body))))
 
 (define iterations 10)
