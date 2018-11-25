@@ -102,7 +102,6 @@
 
   (define ssl/connect
     (lambda (s)
-      ;;; TODO: this should probably be in-connect-init? re: return types
       (if (not (ssl-in-connect-init (ssl-stream-ssl s)))
           0
          (let ([n (ssl-connect (ssl-stream-ssl s))])
@@ -294,7 +293,6 @@
             (let ([err (ssl-ctx-check-private-key ctx)])
               (if (not (= 1 err))
                   (error 'ssl-ctx-check-private-key err))))
-        (info "make-context")
         (if client?
             (ssl-ctx-set-options ctx ssl-op-all)
             (begin

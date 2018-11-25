@@ -37,9 +37,9 @@
        (let () body ...))
 
       ((_ ((name (<- value)) next ...) body ...)
-       (value (trace-lambda name (name)
-                            (let/async (next ...)
-                                       body ...))))
+       (value (lambda (name)
+                (let/async (next ...)
+                           body ...))))
       ((_ ((name value) next ...) body ...)
        (let ((name value))
          (let/async (next ...)
@@ -489,7 +489,6 @@
                   (free-uv-buf buf)
                   (uv/stream-read-raw stream
                                       (lambda (nb buf)
-                                        (info "check-ssl read-raw: ~a" nb)
                                         (if nb
                                             (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
                                               (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))

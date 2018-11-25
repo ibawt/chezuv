@@ -30,9 +30,7 @@
                                   (let ([rx 0]
                                         [url (uv/string->url "https://google.ca")])
                                     (let top ((n 0))
-                                      (format #t "top\n")
                                       (let/async ([r (<- (uv/make-https-request loop ctx url))])
-                                                 (format #t "rx: ~a\n" rx)
                                                  (set! rx (+ 1 rx))
                                                  (if (> rx iterations)
                                                      (begin
