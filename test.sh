@@ -1,6 +1,6 @@
-#! /usr/bin/env scheme -q
+#! /usr/bin/env scheme -q --script
 
 (library-directories "vendor:.")
-(include "test.ss")
+(load "test.ss")
 
 

@@ -68,9 +68,10 @@
           uv-ip4-addr)
   (import (chezscheme)
           (inet))
+
   (define init
-    (begin
-      (load-shared-object "libuv.dylib")))
+    (case (machine-type)
+      ((ta6le) (load-shared-object "libuv.so"))))
 
   (define-ftype uv-buf
     (struct
@@ -299,7 +300,7 @@
       (unlock-object code)))
 
   (define (handle-close h cb)
-    (when (= 0 (uv-is-closing h))
+    (if (= 0 (uv-is-closing h))
       (letrec ([code (foreign-callable
                       (lambda (h)
                         (cb h)
@@ -309,11 +310,11 @@
                       void)])
 
         (lock-object code)
-        (uv-close h (foreign-callable-entry-point code)))))
+        (uv-close h (foreign-callable-entry-point code)))
+      (cb h)))
 
   (define alloc-zero
     (lambda (size)
       (let ([p (foreign-alloc size)])
         (memset p 0 size)
-        p)))
-  )
+        p))))

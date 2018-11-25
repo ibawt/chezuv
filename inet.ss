@@ -1,25 +1,21 @@
 (library (inet)
-  (export AF_INET
-          SOCK_DGRAM
-          SOCK_STREAM
-          sa_family_t
-          in_port_t
-          socklen_t
-          sockaddr_un
-          in_addr_t
-          in_addr
-          sockaddr_in
-          sockaddr
-          addrinfo
-          INADDR_ANY
-          int->ip-address
-          sockaddr->ip-address
-          sockaddr-set-port
-          sockaddr-set-port)
+  (export
+   addrinfo
+   sockaddr_in
+   sockaddr
+   in_addr
+   in_addr_t
+   AF_INET
+   SOCK_STREAM
+   SOCK_DGRAM
+   int->ip-address
+   sockaddr->ip-address
+   sockaddr-set-port)
   (import (chezscheme))
+
   (define init
-    (begin
-      (load-shared-object "libc.dylib")))
+    (case (machine-type)
+      ((ta6le) (load-shared-object "libc.so.6"))))
 
   ;; FIXME: this only works on OSX, maybe BSD idk
 
@@ -27,42 +23,78 @@
   (define SOCK_STREAM 1)
   (define SOCK_DGRAM 2)
 
-  (define-ftype sa_family_t unsigned-8)
-  (define-ftype in_port_t unsigned-16)
+  (meta-cond
+   [(eq? 'ta6le (machine-type))
+      (define-ftype sa_family_t unsigned-16)
+      (define-ftype in_port_t unsigned-16)
 
-  (define-ftype socklen_t unsigned-int)
-  (define-ftype sockaddr_un
-    (struct (sun_family sa_family_t)
-      (sun_data (array 108 char))))
+      (define-ftype socklen_t unsigned-int)
+      (define-ftype sockaddr_un
+        (struct (sun_family sa_family_t)
+                (sun_data (array 108 char))))
 
-  (define-ftype in_addr_t unsigned-32)
-  (define-ftype in_addr
-    (struct (s_addr in_addr_t)))
+      (define-ftype in_addr_t unsigned-32)
+      (define-ftype in_addr
+        (struct (s_addr in_addr_t)))
 
-  (define-ftype sockaddr_in
-    (struct
-        (sin_len unsigned-8)
-      (sin_family sa_family_t)
-      (sin_port in_port_t)
-      (sin_addr in_addr)
-      (sin_zero (array 8 unsigned-8))))
+      (define-ftype sockaddr_in
+        (struct
+         (sin_family sa_family_t)
+         (sin_port in_port_t)
+         (sin_addr in_addr)))
 
-  (define-ftype sockaddr
-    (struct
-        (len unsigned-8)
-      (sa_family sa_family_t)
-      (sa_data (array 14 unsigned-8))))
+      (define-ftype sockaddr
+        (struct
+         (sa_family sa_family_t)
+         (sa_data (array 14 unsigned-8))))
 
-  (define-ftype addrinfo
-    (struct
-        (ai_flags int)
-      (ai_family int)
-      (ai_socktype int)
-      (ai_protocol int)
-      (ai_addrlen socklen_t)
-      (ai_canonname (* char))
-      (ai_addr (* sockaddr))
-      (ai_next (* addrinfo))))
+      (define-ftype addrinfo
+        (struct
+         (ai_flags int)
+         (ai_family int)
+         (ai_socktype int)
+         (ai_protocol int)
+         (ai_addrlen socklen_t)
+         (ai_addr (* sockaddr))
+         (ai_canonname (* char))
+         (ai_next (* addrinfo))))]
+   [else
+    (define-ftype sa_family_t unsigned-8)
+    (define-ftype in_port_t unsigned-16)
+
+    (define-ftype socklen_t unsigned-int)
+    (define-ftype sockaddr_un
+      (struct (sun_family sa_family_t)
+              (sun_data (array 108 char))))
+
+    (define-ftype in_addr_t unsigned-32)
+    (define-ftype in_addr
+      (struct (s_addr in_addr_t)))
+
+    (define-ftype sockaddr_in
+      (struct
+       (sin_len unsigned-8)
+       (sin_family sa_family_t)
+       (sin_port in_port_t)
+       (sin_addr in_addr)
+       (sin_zero (array 8 unsigned-8))))
+
+    (define-ftype sockaddr
+      (struct
+       (len unsigned-8)
+       (sa_family sa_family_t)
+       (sa_data (array 14 unsigned-8))))
+
+    (define-ftype addrinfo
+      (struct
+       (ai_flags int)
+       (ai_family int)
+       (ai_socktype int)
+       (ai_protocol int)
+       (ai_addrlen socklen_t)
+       (ai_canonname (* char))
+       (ai_addr (* sockaddr))
+       (ai_next (* addrinfo))))])
 
   (define INADDR_ANY 0)
 
