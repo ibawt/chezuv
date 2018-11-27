@@ -17,8 +17,6 @@
     (case (machine-type)
       ((ta6le) (load-shared-object "libc.so.6"))))
 
-  ;; FIXME: this only works on OSX, maybe BSD idk
-
   (define AF_INET 2)
   (define SOCK_STREAM 1)
   (define SOCK_DGRAM 2)

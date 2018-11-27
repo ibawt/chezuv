@@ -17,6 +17,7 @@
           uv/make-idle
           uv/serve-http
           <- ;; keyword for let/async
+
           let/async
           uv/serve-https
           uv/make-http-request
@@ -192,7 +193,8 @@
         raw))
 
  (define (parse-status status-line)
-   (string-split (utf8->string status-line) #\space))
+   (let ([status (string-split (utf8->string status-line) #\space)])
+     (list (car status) (string->number (cadr status)) (caddr status))))
 
   (define (uv/close loop)
     (uv-stop loop)
@@ -227,7 +229,7 @@
                                (k addr)
                                (begin
                                  (uv-freeaddrinfo addr)
-                                 (error 'getaddrinfo "invalid status" status)))
+                                 (error 'getaddrinfo (format #f "invalid status: ~a" status))))
                            (uv-freeaddrinfo addr))
                          (void* int (* addrinfo))
                          void)])
@@ -246,7 +248,7 @@
                          (unlock-object code)
                          (if (= 0 status)
                              (k socket)
-                             (error 'tcp-connect status)))
+                             (error 'tcp-connect "error in connect" status (uv-err-name status))))
                        (void* int)
                        void)])
         (lock-object code)
@@ -282,7 +284,7 @@
                          (unlock-object code)
                          (if (= 0 status)
                              (k status)
-                             (error 'stream-write status)))
+                             (error 'stream-write "uv/stream-write" status (uv-err-name status))))
                        (void* int)
                        void)])
          (lock-object code)
@@ -464,7 +466,7 @@
   (define (ssl-output-buffer client)
     (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
            [base (get-buf)]
-           [n (ssl/drain-output-buffer client base (* 64 1024))])
+           [n (ssl/drain-output-buffer client base buf-size)])
       (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 base))
       (ftype-set! uv-buf (len) buf n)
       buf))
@@ -472,34 +474,29 @@
   (define (check-ssl client stream fn)
     (lambda (k)
       (let lp ([n (fn)])
-        (cond
-         ((= 0 n) (k 0))
-         ((or (= ssl-error-want-read n)
-              (= ssl-error-want-write n))
-          ;; OpenSSL seems to send back the wrong flag
-          ;; so we'll just see if there's anything to output
-          ;; if not then read something
-          (let ([buf (ssl-output-buffer client)])
-            (if (positive? (ftype-ref uv-buf (len) buf))
-                ((uv/stream-write stream buf)
-                 (lambda (k)
-                   (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
-                   (lp (fn))))
-                (begin
-                  (free-uv-buf buf)
-                  (uv/stream-read-raw stream
-                                      (lambda (nb buf)
-                                        (if nb
-                                            (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
-                                              (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                                              (if (= n nb)
-                                                  (lp (fn))
-                                                  (error 'check-ssl n)))
-                                            (error 'check-ssl nb))))))))
-         ((= -1 n) (error 'check-ssl n))
-         ((> n 0) (k n))
-         (else
-          (error 'idk "shouldn't get here!"))))))
+        (if (ssl/error? n)
+            (let ([e (ssl/get-error client n)])
+              (cond
+               ((= e ssl-error-none) (k 0))
+               ((or (= e ssl-error-want-write)
+                    (= e ssl-error-want-read))
+                (let ([buf (ssl-output-buffer client)])
+                  (if (positive? (ftype-ref uv-buf (len) buf))
+                      ((uv/stream-write stream buf)
+                       (lambda (k)
+                         (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
+                         (lp (fn))))
+                      (uv/stream-read-raw stream
+                                          (lambda (nb buf)
+                                            (if nb
+                                                (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
+                                                  (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                                                  (if (= n nb)
+                                                      (lp (fn))
+                                                      (error 'check-ssl n)))
+                                                (error 'check-ssl nb)))))))
+               (else (error 'check-ssl "unhandled openssl error code" e))))
+            (k n)))))
 
   (define (tls-shutdown tls stream)
     (lambda (k)
@@ -603,13 +600,13 @@
         (ssl/free-stream client)
         (k #t))))
 
-  (define (uv/make-http-request loop req)
+  (define (uv/make-http-request loop url)
     (lambda (k)
-      (let/async ([addr (<- (uv/getaddrinfo loop "google.ca"))]
-                  [sa (addr->sockaddr addr 80)]
+      (let/async ([addr (<- (uv/getaddrinfo loop (uv/url-host url)))]
+                  [sa (addr->sockaddr addr (uv/url-port url))]
                   [sock (<- (uv/tcp-connect loop sa))]
                   [status (<- (uv/stream-write sock "GET / HTTP/1.1\r\nHost: google.ca\r\nConnection: close\r\n\r\n"))]
-                  [resp (<- (uv/read-http-response (uv/make-reader sock uv/stream-read)))])
+                  [resp (<- (uv/read-http-response (uv/make-reader sock (lambda (b) (uv/stream-read sock b)))))])
                  (k resp))))
 
   (define (uv/make-https-request loop ctx url)

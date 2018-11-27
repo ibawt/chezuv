@@ -21,23 +21,25 @@
     (format #t "Body:\n")
     (format #t "~a\n" (utf8->string body))))
 
-(define iterations 10)
+(define iterations 1)
 (define (run)
   (format #t "Running\n")
-  (time
-   (uv/with-loop
-    (lambda (loop)
-      (uv/call-with-ssl-context #f #f #t
-                                (lambda (ctx)
-                                  (let ([rx 0]
-                                        [url (uv/string->url "https://google.ca")])
-                                    (let top ((n 0))
-                                      (let/async ([r (<- (uv/make-https-request loop ctx url))])
-                                                 (set! rx (+ 1 rx))
-                                                 (if (> rx iterations)
-                                                     (begin
-                                                       (apply display-http-request r)
-                                                       (format #t "iterations: ~a, rx: ~a\n" iterations rx)
-                                                       (exit))
-                                                     (top (+ 1 n))))))))))))
+  (call/cc
+   (lambda (done)
+     (time
+      (uv/with-loop
+       (lambda (loop)
+         (uv/call-with-ssl-context #f #f #t
+                                   (lambda (ctx)
+                                     (let ([rx 0]
+                                           [url (uv/string->url "https://www.google.ca/")])
+                                       (let top ((n 0))
+                                         (let/async ([r (<- (uv/make-https-request loop ctx url))])
+                                                    (set! rx (+ 1 rx))
+                                                    (if (> rx iterations)
+                                                        (begin
+                                                          (apply display-http-request r)
+                                                          (format #t "iterations: ~a, rx: ~a\n" iterations rx)
+                                                          (done))
+                                                        (top (+ 1 n))))))))))))))
 (run)

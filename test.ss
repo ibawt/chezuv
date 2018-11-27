@@ -3,8 +3,6 @@
         (srfi s64 testing)
         (uv))
 
-;; (load-shared-object "libc.so")
-
 (test-begin "chezuv")
 
 (define-syntax it
@@ -19,6 +17,21 @@
   (syntax-rules ()
     ((_ s . body)
      (test-group s . body))))
+
+(define (with-nginx fn)
+  (let-values (([to-stdin from-stdout from-stderr process-id] (open-process-ports "nginx")))
+    (fn)))
+
+
+(describe "http requests"
+ (it "should make a simple http request"
+     (let ([url (uv/string->url "http://localhost:8080")])
+       (call/cc (lambda (k)
+                  (uv/with-loop
+                   (lambda (loop)
+                     (let/async ([resp (<- (uv/make-http-request loop url))])
+                                (test-equal "response code" 200 (cadar resp))
+                                (k)))))))))
 
 (describe
  "url functions"

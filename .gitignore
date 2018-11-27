@@ -11,3 +11,4 @@
 *.so
 *.html
 /libchezuv.dylib
+/fixtures/nginx/nginx.pid
