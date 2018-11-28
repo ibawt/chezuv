@@ -18,20 +18,28 @@
     ((_ s . body)
      (test-group s . body))))
 
-(define (with-nginx fn)
-  (let-values (([to-stdin from-stdout from-stderr process-id] (open-process-ports "nginx")))
-    (fn)))
+(define-syntax with-nginx
+  (syntax-rules ()
+    ((_ . body)
+     (dynamic-wind
+         (lambda ()
+           (system "nginx -c nginx.conf -p fixtures/nginx > /dev/null 2>&1")
+           (sleep (make-time 'time-duration 500000 1)))
+         (lambda () . body)
+         (lambda ()
+           (system "nginx -c nginx.conf -s quit -p fixtures/nginx >/dev/null 2>&1"))))))
 
 
 (describe "http requests"
- (it "should make a simple http request"
-     (let ([url (uv/string->url "http://localhost:8080")])
-       (call/cc (lambda (k)
-                  (uv/with-loop
-                   (lambda (loop)
-                     (let/async ([resp (<- (uv/make-http-request loop url))])
-                                (test-equal "response code" 200 (cadar resp))
-                                (k)))))))))
+          (with-nginx
+           (it "should make a simple http request"
+               (let ([url (uv/string->url "http://localhost:8080")])
+                 (call/cc (lambda (k)
+                             (uv/with-loop
+                              (lambda (loop)
+                                (let/async ([resp (<- (uv/make-http-request loop url))])
+                                           (test-equal 200 (cadar resp))
+                                           (k))))))))))
 
 (describe
  "url functions"
