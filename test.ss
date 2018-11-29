@@ -3,6 +3,27 @@
         (srfi s64 testing)
         (uv))
 
+(define (my-simple-runner)
+  (let ((runner (test-runner-null))
+        (num-passed 0)
+        (num-failed 0))
+    (test-runner-on-test-end! runner
+                              (lambda (runner)
+                                (case (test-result-kind runner)
+                                  ((pass xpass) (set! num-passed (+ num-passed 1)))
+                                  ((fail xfail) (set! num-failed (+ num-failed 1)))
+                                  (else #t))))
+    (test-runner-on-final! runner
+                           (lambda (runner)
+                             (format #t "Passing tests: ~d.~%Failing tests: ~d.~%"
+                                     num-passed num-failed)
+                             (when (positive? num-failed)
+                               (exit 1))))
+    runner))
+
+(test-runner-factory
+ (lambda () (my-simple-runner)))
+
 (test-begin "chezuv")
 
 (define-syntax it
@@ -63,3 +84,4 @@
              (test-equal '("0.0.0.0" "4343") splits))))
 
 (test-end "chezuv")
+
