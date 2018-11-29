@@ -9,6 +9,5 @@
 /profile
 /profile.html
 *.so
-*.html
 /libchezuv.dylib
 /fixtures/nginx/nginx.pid
