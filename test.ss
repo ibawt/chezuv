@@ -38,6 +38,7 @@
                              (uv/with-loop
                               (lambda (loop)
                                 (let/async ([resp (<- (uv/make-http-request loop url))])
+                                           (format #t "response: ~a\n" resp)
                                            (test-equal 200 (cadar resp))
                                            (k))))))))))
 
