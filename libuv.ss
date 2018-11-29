@@ -71,7 +71,7 @@
 
   (define init
     (case (machine-type)
-      ((ta6le) (load-shared-object "libuv.so"))))
+      ((ta6le) (load-shared-object "libuv.so.1"))))
 
   (define-ftype uv-buf
     (struct
