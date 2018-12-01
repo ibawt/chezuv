@@ -491,7 +491,7 @@
                                                       (lp (fn))
                                                       (error 'check-ssl n)))
                                                 (error 'check-ssl nb)))))))
-               (else (error 'check-ssl "unhandled openssl error code" e (ssl/error-string e)))))
+               (else (error 'check-ssl "unhandled openssl error code" e (ssl/error-string)))))
             (k n)))))
 
   (define (tls-shutdown tls stream)

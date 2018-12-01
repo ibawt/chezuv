@@ -2,6 +2,7 @@
 (import (chezscheme)
         (srfi s64 testing)
         (utils)
+        (openssl)
         (uv))
 
 (define (my-simple-runner)
@@ -26,6 +27,15 @@
  (lambda () (my-simple-runner)))
 
 (test-begin "chezuv")
+
+(define test-pem
+  (call-with-input-file "fixtures/nginx/cert.pem"
+    (lambda (p)
+      (let loop ([line (get-line p)]
+                 [result '()])
+        (if (eof-object? line)
+            (apply string-append (reverse result))
+            (loop (get-line p) (cons (format #f "~a\n" line) result)))))))
 
 (define-syntax it
   (syntax-rules ()
@@ -66,11 +76,11 @@
     (let ([url (uv/string->url url-string)])
       (call/cc
        (lambda (k)
-         (uv/call-with-ssl-context #f #f #t
+         (uv/call-with-ssl-context "./fixtures/nginx/cert.pem" #f #t
             (lambda (ctx)
               (uv/with-loop
-              (lambda (loop)
-                (let/async ([resp (<- (uv/make-https-request loop ctx url))])
+               (lambda (loop)
+                 (let/async ([resp (<- (uv/make-https-request loop ctx url))])
                             (k resp)))))))))))
 
 (describe "http requests"

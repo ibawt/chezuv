@@ -15,6 +15,7 @@
    ssl/error?
    ssl/get-error
    ssl/error-string
+   ssl/set-ca-path!
 
    ssl-error-none
    ssl-error-ssl
@@ -152,7 +153,7 @@
                        void))
 
   (define ssl/error-string
-    (lambda (e)
+    (lambda ()
       (let ([b (make-bytevector 2048)])
         (err-get-string-n (err-get-error) b (bytevector-length b))
         (from-c-string b))))
@@ -201,7 +202,6 @@
     (foreign-procedure "BIO_test_flags"
                        (void* int)
                        boolean))
-
 
   (define bio-flags-should-retry #x08)
 
@@ -268,7 +268,6 @@
                        ()
                        void*))
 
-
   (define ssl-ctx-use-certificate-file
     (foreign-procedure "SSL_CTX_use_certificate_file"
                        (void* string int)
@@ -324,6 +323,47 @@
     (lambda (path)
       (set! ca-path path)))
 
+  (define x509-store-add-cert
+    (foreign-procedure "X509_STORE_add_cert"
+                       (void* void*)
+                       int))
+
+  (define pem-read-bio-x509
+    (foreign-procedure "PEM_read_bio_X509"
+                       (void* void* void* void*)
+                       void*))
+
+  (define bio-free
+    (foreign-procedure "BIO_free"
+                       (void*)
+                       int))
+
+  (define bio-write2
+    (foreign-procedure "BIO_write"
+                       (void* u8* int)
+                       int))
+
+  (define (pem->x509 pem)
+    (let* ([b (bio-new (bio-s-mem))]
+           [_ (bio-write2 b (string->utf8 pem) (string-length pem))]
+           [x509 (pem-read-bio-x509 b 0 0 0)])
+      (bio-free b)
+      (if (= 0 x509)
+          (error 'pem->x509 "error read PEM" (ssl/error-string))
+          x509)))
+
+  (define ssl-ctx-ctrl
+    (foreign-procedure "SSL_CTX_ctrl"
+                       (void* int long void*)
+                       long))
+
+  (define ssl-ctrl-extra-chain-cert 14)
+
+  (define ssl-ctx-use-certificate
+    (foreign-procedure "SSL_CTX_use_certificate"
+                       (void* void*)
+                       int))
+
   (define ssl/make-context
     (lambda (cert key client?)
       (let ([ctx (ssl-ctx-new (if client? (tls-method) (tls-server-method)))])
@@ -339,7 +379,7 @@
             (let ([err (ssl-ctx-check-private-key ctx)])
               (if (not (= 1 err))
                   (error 'ssl-ctx-check-private-key err))))
-        (ssl-ctx-load-verify-locations ctx #f ca-path)
+        (ssl-ctx-load-verify-locations ctx cert ca-path)
         (if client?
             (begin
               (ssl-ctx-set-verify ctx ssl/verify-peer 0)
