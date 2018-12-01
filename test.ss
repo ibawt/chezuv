@@ -72,11 +72,11 @@
                        (k resp)))))))))
 
 (define https-test-request
-  (lambda (url-string)
+  (lambda (url-string cert)
     (let ([url (uv/string->url url-string)])
       (call/cc
        (lambda (k)
-         (uv/call-with-ssl-context "./fixtures/nginx/cert.pem" #f #t
+         (uv/call-with-ssl-context cert #f #t
             (lambda (ctx)
               (uv/with-loop
                (lambda (loop)
@@ -89,8 +89,13 @@
         (let ((resp (http-test-request "http://localhost:8080")))
           (test-equal 200 (cadar resp))))
     (it "should make a simple https request"
-        (let ([resp (https-test-request "https://localhost:9090")])
-          (test-equal 200 (cadar resp))))))
+        (let ([resp (https-test-request "https://localhost:9090" "./fixtures/nginx/cert.pem")])
+          (test-equal 200 (cadar resp))))
+    (it "should fail with a non verified cert"
+        (guard
+         (e (else (test-assert #t)))
+         (let ([resp (https-test-request "https://localhost:9090" #f)])
+           (test-assert #f))))))
 
 (describe
  "url functions"

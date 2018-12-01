@@ -491,7 +491,8 @@
                                                       (lp (fn))
                                                       (error 'check-ssl n)))
                                                 (error 'check-ssl nb)))))))
-               (else (error 'check-ssl "unhandled openssl error code" e (ssl/error-string)))))
+               (else (let-values (((e s) (ssl/library-error)))
+                       (error 'check-ssl "unhandled openssl error code" e s)))))
             (k n)))))
 
   (define (tls-shutdown tls stream)
@@ -542,7 +543,6 @@
            (k (list client
                     (make-tls-reader client stream)
                     (make-tls-writer client stream))))))))
-
 
   (define (uv/write-http-request writer req)
     (writer "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))

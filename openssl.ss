@@ -14,8 +14,8 @@
    ssl/shutdown
    ssl/error?
    ssl/get-error
-   ssl/error-string
    ssl/set-ca-path!
+   ssl/library-error
 
    ssl-error-none
    ssl-error-ssl
@@ -152,11 +152,12 @@
                        (int u8* int)
                        void))
 
-  (define ssl/error-string
+  (define ssl/library-error
     (lambda ()
-      (let ([b (make-bytevector 2048)])
-        (err-get-string-n (err-get-error) b (bytevector-length b))
-        (from-c-string b))))
+      (let ([b (make-bytevector 2048)]
+            [e (err-get-error)])
+        (err-get-string-n e b (bytevector-length b))
+        (values e (from-c-string b)))))
 
   (define ssl-new
     (foreign-procedure "SSL_new"
@@ -349,15 +350,8 @@
            [x509 (pem-read-bio-x509 b 0 0 0)])
       (bio-free b)
       (if (= 0 x509)
-          (error 'pem->x509 "error read PEM" (ssl/error-string))
+          (error 'pem->x509 "error read PEM")
           x509)))
-
-  (define ssl-ctx-ctrl
-    (foreign-procedure "SSL_CTX_ctrl"
-                       (void* int long void*)
-                       long))
-
-  (define ssl-ctrl-extra-chain-cert 14)
 
   (define ssl-ctx-use-certificate
     (foreign-procedure "SSL_CTX_use_certificate"
