@@ -28,7 +28,6 @@
     (case (machine-type)
       ((ta6le)
        (begin
-         (load-shared-object "libcrypto.so")
          (load-shared-object "libssl.so")))))
 
   (define (info . args)
@@ -142,6 +141,11 @@
                        (void* int)
                        int))
 
+  (define err-get-error
+    (foreign-procedure "ERR_get_error"
+                       ()
+                       int))
+
   (define err-get-string-n
     (foreign-procedure "ERR_error_string_n"
                        (int u8* int)
@@ -150,7 +154,7 @@
   (define ssl/error-string
     (lambda (e)
       (let ([b (make-bytevector 2048)])
-        (err-get-string-n e b (bytevector-length b))
+        (err-get-string-n (err-get-error) b (bytevector-length b))
         (from-c-string b))))
 
   (define ssl-new
@@ -309,6 +313,17 @@
     (lambda (ctx)
       (ssl-ctx-free ctx)))
 
+  (define ssl-ctx-load-verify-locations
+    (foreign-procedure "SSL_CTX_load_verify_locations"
+                       (void* string string)
+                       int))
+
+  (define ca-path "/etc/ssl/certs")
+
+  (define ssl/set-ca-path!
+    (lambda (path)
+      (set! ca-path path)))
+
   (define ssl/make-context
     (lambda (cert key client?)
       (let ([ctx (ssl-ctx-new (if client? (tls-method) (tls-server-method)))])
@@ -324,6 +339,7 @@
             (let ([err (ssl-ctx-check-private-key ctx)])
               (if (not (= 1 err))
                   (error 'ssl-ctx-check-private-key err))))
+        (ssl-ctx-load-verify-locations ctx #f ca-path)
         (if client?
             (begin
               (ssl-ctx-set-verify ctx ssl/verify-peer 0)

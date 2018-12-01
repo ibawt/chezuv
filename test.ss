@@ -79,7 +79,7 @@
         (let ((resp (http-test-request "http://localhost:8080")))
           (test-equal 200 (cadar resp))))
     (it "should make a simple https request"
-        (let ([resp (https-test-request "https://google.ca")])
+        (let ([resp (https-test-request "https://localhost:9090")])
           (test-equal 200 (cadar resp))))))
 
 (describe
