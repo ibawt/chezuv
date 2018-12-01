@@ -35,6 +35,10 @@
     (apply format #t args)
     (newline))
 
+  (define-condition-type &ssl-error &condition make-ssl-error ssl-error?
+    (code ssl-error-code)
+    (message ssl-error-message))
+
   (define ssl-filetype-pem 1)
 
   (define (ssl/error? e)
@@ -75,7 +79,7 @@
 
   (define ssl/free-stream
     (lambda (s)
-      #f))
+      (ssl-free (ssl-stream-ssl s))))
 
   (define (clamp x)
     (if (negative? x) 0 x))
@@ -157,7 +161,7 @@
       (let ([b (make-bytevector 2048)]
             [e (err-get-error)])
         (err-get-string-n e b (bytevector-length b))
-        (values e (from-c-string b)))))
+        (make-ssl-error e (from-c-string)))))
 
   (define ssl-new
     (foreign-procedure "SSL_new"
@@ -382,4 +386,3 @@
               (ssl-ctx-set-cipher-list ctx ssl-modern-cipher-list)
               (ssl-ctx-set-options ctx ssl-op-modern-server)))
         ctx))))
-

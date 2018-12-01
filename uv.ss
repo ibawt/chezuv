@@ -491,8 +491,7 @@
                                                       (lp (fn))
                                                       (error 'check-ssl n)))
                                                 (error 'check-ssl nb)))))))
-               (else (let-values (((e s) (ssl/library-error)))
-                       (error 'check-ssl "unhandled openssl error code" e s)))))
+               (else (raise (ssl/library-error)))))
             (k n)))))
 
   (define (tls-shutdown tls stream)

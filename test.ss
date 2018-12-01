@@ -27,7 +27,6 @@
  (lambda () (my-simple-runner)))
 
 (test-begin "chezuv")
-
 (define test-pem
   (call-with-input-file "fixtures/nginx/cert.pem"
     (lambda (p)
@@ -88,7 +87,7 @@
     (it "should make a simple http request"
         (let ((resp (http-test-request "http://localhost:8080")))
           (test-equal 200 (cadar resp))))
-    (it "should make a simple https request"
+    (it "should make a simple https request (verified)"
         (let ([resp (https-test-request "https://localhost:9090" "./fixtures/nginx/cert.pem")])
           (test-equal 200 (cadar resp))))
     (it "should fail with a non verified cert"
