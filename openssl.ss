@@ -14,13 +14,15 @@
    ssl/shutdown
    ssl/error?
    ssl/get-error
+   ssl/error-string
 
    ssl-error-none
    ssl-error-ssl
    ssl-error-want-read
    ssl-error-want-write)
 
-  (import (chezscheme))
+  (import (chezscheme)
+          (utils))
 
   (define init
     (case (machine-type)
@@ -52,6 +54,11 @@
 
   (define ssl-modern-cipher-list
     "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA:ECDHE-ECDSA-DES-CBC3-SHA:ECDHE-RSA-DES-CBC3-SHA:EDH-RSA-DES-CBC3-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA:DES-CBC3-SHA:!DSS")
+
+  (define ssl/verify-none 0)
+  (define ssl/verify-peer 1)
+  (define ssl/verify-fail-if-no-peer-cert 2)
+  (define ssl/verify-client-once 4)
 
   (define-record ssl-stream (ssl reader writer))
 
@@ -134,6 +141,17 @@
     (foreign-procedure "SSL_get_error"
                        (void* int)
                        int))
+
+  (define err-get-string-n
+    (foreign-procedure "ERR_error_string_n"
+                       (int u8* int)
+                       void))
+
+  (define ssl/error-string
+    (lambda (e)
+      (let ([b (make-bytevector 2048)])
+        (err-get-string-n e b (bytevector-length b))
+        (from-c-string b))))
 
   (define ssl-new
     (foreign-procedure "SSL_new"
@@ -277,6 +295,16 @@
                        (void*)
                        void))
 
+  (define ssl-ctx-set-verify
+    (foreign-procedure "SSL_CTX_set_verify"
+                       (void* int void*)
+                       void))
+
+  (define ssl-ctx-set-verify-depth
+    (foreign-procedure "SSL_CTX_set_verify_depth"
+                       (void* int)
+                       void))
+
   (define ssl/free-context
     (lambda (ctx)
       (ssl-ctx-free ctx)))
@@ -297,7 +325,9 @@
               (if (not (= 1 err))
                   (error 'ssl-ctx-check-private-key err))))
         (if client?
-            (ssl-ctx-set-options ctx ssl-op-all)
+            (begin
+              (ssl-ctx-set-verify ctx ssl/verify-peer 0)
+              (ssl-ctx-set-options ctx ssl-op-all))
             (begin
               (ssl-ctx-set-cipher-list ctx ssl-modern-cipher-list)
               (ssl-ctx-set-options ctx ssl-op-modern-server)))

@@ -26,6 +26,7 @@
           uv/getaddrinfo)
   (import (chezscheme)
           (inet)
+          (utils)
           (libuv)
           (openssl)
           (alloc)
@@ -45,11 +46,6 @@
        (let ((name value))
          (let/async (next ...)
                     body ...)))))
-  ;; --------------------------------------------------------------------------------
-  ;; Private
-  ;; --------------------------------------------------------------------------------
-
-  (include "utils.ss")
 
   (define (nothing . args)
     #f)
@@ -495,7 +491,7 @@
                                                       (lp (fn))
                                                       (error 'check-ssl n)))
                                                 (error 'check-ssl nb)))))))
-               (else (error 'check-ssl "unhandled openssl error code" e))))
+               (else (error 'check-ssl "unhandled openssl error code" e (ssl/error-string e)))))
             (k n)))))
 
   (define (tls-shutdown tls stream)

@@ -1,6 +1,7 @@
 ;; -*- geiser-scheme-implementation: chez -*-
 (import (chezscheme)
         (srfi s64 testing)
+        (utils)
         (uv))
 
 (define (my-simple-runner)
@@ -78,7 +79,7 @@
         (let ((resp (http-test-request "http://localhost:8080")))
           (test-equal 200 (cadar resp))))
     (it "should make a simple https request"
-        (let ([resp (https-test-request "https://localhost:9090")])
+        (let ([resp (https-test-request "https://google.ca")])
           (test-equal 200 (cadar resp))))))
 
 (describe
@@ -94,8 +95,6 @@
        (test-equal 'https (uv/url-protocol url))
        (test-eqv 8080 (uv/url-port url))
        (test-equal "/foo/bar" (uv/url-path url)))))
-
-(include "utils.ss")
 
 (describe "string-split"
   (it "should split on a delimiter"
