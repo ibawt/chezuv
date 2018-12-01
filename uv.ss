@@ -489,16 +489,14 @@
                                                   (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
                                                   (if (= n nb)
                                                       (lp (fn))
-                                                      (error 'check-ssl n)))
-                                                (error 'check-ssl nb)))))))
+                                                      (error 'check-ssl "probably need to loop but will be annoying "n)))
+                                                (error 'check-ssl "failed to read bytes" nb)))))))
                (else (raise (ssl/library-error)))))
             (k n)))))
 
   (define (tls-shutdown tls stream)
     (lambda (k)
-      ((check-ssl tls stream (lambda ()
-                               (ssl/shutdown tls)))
-       k)))
+      ((check-ssl tls stream (lambda () (ssl/shutdown tls))) k)))
 
   (define (make-tls-writer client stream)
     (lambda (buf)
@@ -508,8 +506,7 @@
                                       (ssl/write client
                                                  (ftype-pointer-address (ftype-ref uv-buf (base) buf))
                                                  (ftype-ref uv-buf (len) buf))))
-           (lambda (v)
-             (k v)))))))
+           k)))))
 
   (define (make-tls-reader client stream)
     (uv/make-reader stream
