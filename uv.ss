@@ -205,15 +205,15 @@
 
   (define uv/call-with-loop
     (lambda (f)
-      (let ([l (uvloop-create)])
-        (register-signal-handlers l)
+      (let ([l #f])
         (dynamic-wind
-          (lambda () #f)
-          (lambda ()
-            (f l)
-            (uv-run l 0))
-          (lambda ()
-            (uv-stop l))))))
+            (lambda ()
+              (set! l (uvloop-create))
+              (register-signal-handlers l))
+            (lambda ()
+              (f l)
+              (uv-run l 0))
+            (lambda () (uv-stop l))))))
 
   (define uv/getaddrinfo
     (lambda (loop name)
