@@ -229,15 +229,15 @@
                                (k addr)
                                (begin
                                  (uv-freeaddrinfo addr)
-                                 (error 'getaddrinfo (format #f "invalid status: ~a" status))))
+                                 (error 'getaddrinfo "invalid status" status)))
                            (uv-freeaddrinfo addr))
                          (void* int (* addrinfo))
                          void)])
            (lock-object code)
            (ftype-set! addrinfo (ai_family) hint AF_INET)
            (ftype-set! addrinfo (ai_socktype) hint SOCK_STREAM)
-           (uv-getaddrinfo loop req (foreign-callable-entry-point code)
-                           name #f hint)))))
+           (check (uv-getaddrinfo loop req (foreign-callable-entry-point code)
+                                  name #f hint))))))
 
   (define (uv/tcp-connect loop addr)
     (lambda (k)
@@ -269,9 +269,9 @@
                                                (foreign-free idle))))
                                        (void*)
                                        void)])
-       (uv-idle-init loop idle)
-       (lock-object code)
-       (uv-idle-start idle (foreign-callable-entry-point code)))))
+        (check (uv-idle-init loop idle))
+        (lock-object code)
+        (check (uv-idle-start idle (foreign-callable-entry-point code))))))
 
   (define (uv/stream-write stream s)
      (lambda (k)
@@ -568,10 +568,6 @@
                    (lambda (ok)
                      (ssl/free-stream (car tls))
                      (on-done ok))))))
-
-  (define (partial fn x)
-    (lambda (args ...)
-      (apply fn x args)))
 
   (define (uv/serve-http stream on-done)
     (serve-http (uv/make-reader stream (lambda (b) (uv/stream-read stream b)))
