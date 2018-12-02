@@ -16,6 +16,7 @@
    ssl/get-error
    ssl/set-ca-path!
    ssl/library-error
+   ssl/call-with-context
 
    ssl-error-none
    ssl-error-ssl
@@ -361,6 +362,14 @@
     (foreign-procedure "SSL_CTX_use_certificate"
                        (void* void*)
                        int))
+
+  (define ssl/call-with-context
+    (lambda (cert key client? f)
+      (let ((ctx #f))
+        (dynamic-wind
+            (lambda () (set! ctx (ssl/make-context cert key client?)))
+            (lambda () (f ctx))
+            (lambda () (ssl/free-context ctx))))))
 
   (define ssl/make-context
     (lambda (cert key client?)

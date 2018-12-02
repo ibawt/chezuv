@@ -21,7 +21,6 @@
           uv/serve-https
           uv/make-http-request
           uv/make-https-request
-          uv/call-with-ssl-context
           uv/getaddrinfo)
   (import (chezscheme)
           (inet)
@@ -554,20 +553,6 @@
       (if version
           (not (and conn (string=? "close" conn)))
           #f)))
-
-  (define uv/call-with-ssl-context
-    (let ([ctx-guardian (make-guardian)])
-      (collect-request-handler
-       (lambda ()
-         (collect)
-         (let f ([x (ctx-guardian)])
-           (when x
-             (ssl/free-context x)
-             (f (ctx-guardian))))))
-      (lambda (cert key client? fn)
-        (let ([ctx (ssl/make-context cert key client?)])
-          (ctx-guardian ctx)
-          (fn ctx)))))
 
   (define (serve-http reader writer on-done)
     (let/async ([req (<- (uv/read-http-response reader))]

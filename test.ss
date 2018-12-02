@@ -79,7 +79,7 @@
     (let ([url (uv/string->url url-string)])
       (call/cc
        (lambda (k)
-         (uv/call-with-ssl-context cert #f #t
+         (ssl/call-with-context cert #f #t
             (lambda (ctx)
               (uv/call-with-loop
                (lambda (loop)
