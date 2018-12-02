@@ -354,7 +354,7 @@
            [x509 (pem-read-bio-x509 b 0 0 0)])
       (bio-free b)
       (if (= 0 x509)
-          (error 'pem->x509 "error read PEM")
+          (raise (ssl/library-error))
           x509)))
 
   (define ssl-ctx-use-certificate
@@ -366,17 +366,17 @@
     (lambda (cert key client?)
       (let ([ctx (ssl-ctx-new (if client? (tls-method) (tls-server-method)))])
         (if (= 0 ctx)
-            (error 'ssl-ctx-new "making ssl context"))
+            (raise (ssl/library-error)))
         (when (and cert key)
             (let ([err (ssl-ctx-use-certificate-file ctx cert ssl-filetype-pem)])
               (if (not (= 1 err))
-                  (error 'ssl-ctx-use-certificate-file err)))
+                  (raise (ssl/library-error))))
             (let ([err (ssl-ctx-use-private-key-file ctx key ssl-filetype-pem)])
               (if (not (= 1 err))
-                  (error 'ssl-ctx-use-private-key-file err)))
+                  (raise (ssl/library-error))))
             (let ([err (ssl-ctx-check-private-key ctx)])
               (if (not (= 1 err))
-                  (error 'ssl-ctx-check-private-key err))))
+                  (raise (ssl/library-error)))))
         (ssl-ctx-load-verify-locations ctx cert ca-path)
         (if client?
             (begin
