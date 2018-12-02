@@ -27,7 +27,7 @@
   (call/cc
    (lambda (done)
      (time
-      (uv/with-loop
+      (uv/call-with-loop
        (lambda (loop)
          (uv/call-with-ssl-context #f #f #t
                                    (lambda (ctx)

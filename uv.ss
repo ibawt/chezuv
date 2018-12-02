@@ -1,7 +1,6 @@
 ;; -*- geiser-scheme-implementation: chez -*-
 (library (uv)
-  (export uv/with-loop
-          uv/make-http-request
+  (export uv/call-with-loop
           uv/string->url
           uv/url-host
           uv/url-protocol
@@ -46,6 +45,12 @@
        (let ((name value))
          (let/async (next ...)
                     body ...)))))
+
+  (define-record-type http-request
+    (fields headers body method url))
+
+  (define-record-type http-response
+    (fields headers body status version code))
 
   (define (nothing . args)
     #f)
@@ -199,7 +204,7 @@
   (define (uv/stop loop)
     (uv-stop loop))
 
-  (define uv/with-loop
+  (define uv/call-with-loop
     (lambda (f)
       (let ([l (uvloop-create)])
         (register-signal-handlers l)
@@ -546,7 +551,9 @@
   (define (keep-alive? req)
     (let ([version (string=? "HTTP/1.1" (caddar req))]
           [conn (header-value (cadr req) "Connection")])
-      (not (and (not version) conn (string=? "close" conn)))))
+      (if version
+          (not (and conn (string=? "close" conn)))
+          #f)))
 
   (define uv/call-with-ssl-context
     (let ([ctx-guardian (make-guardian)])
@@ -564,10 +571,10 @@
 
   (define (serve-http reader writer on-done)
     (let/async ([req (<- (uv/read-http-response reader))]
-                [status (<- uv/write-http-request writer req)])
-                     (if (keep-alive? req)
-                         (serve-http reader writer on-done)
-                         (on-done status))))
+                [status (<- (uv/write-http-request writer req))])
+               (if (keep-alive? req)
+                   (serve-http reader writer on-done)
+                   (on-done status))))
 
   (define (uv/serve-https ctx stream on-done)
     ((tls-accept ctx stream)
@@ -582,8 +589,8 @@
       (apply fn x args)))
 
   (define (uv/serve-http stream on-done)
-    (serve-http (uv/make-reader stream (partial uv/stream-read stream))
-                (partial uv/stream-write stream)
+    (serve-http (uv/make-reader stream (lambda (b) (uv/stream-read stream b)))
+                (lambda (s) (uv/stream-write stream s))
                 on-done))
 
   (define close-tls-client
@@ -597,7 +604,7 @@
       (let/async ([addr (<- (uv/getaddrinfo loop (uv/url-host url)))]
                   [sa (addr->sockaddr addr (uv/url-port url))]
                   [sock (<- (uv/tcp-connect loop sa))]
-                  [status (<- (uv/stream-write sock "GET / HTTP/1.1\r\nHost: google.ca\r\nConnection: close\r\n\r\n"))]
+                  [status (<- (uv/stream-write sock (format #f "GET / HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n\r\n" (uv/url-host url))))]
                   [resp (<- (uv/read-http-response (uv/make-reader sock (lambda (b) (uv/stream-read sock b)))))])
                  (k resp))))
 

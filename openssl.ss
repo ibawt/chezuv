@@ -64,7 +64,7 @@
   (define ssl/verify-fail-if-no-peer-cert 2)
   (define ssl/verify-client-once 4)
 
-  (define-record ssl-stream (ssl reader writer))
+  (define-record-type ssl-stream (fields ssl reader writer))
 
   (define ssl/make-stream
     (lambda (ctx client?)
