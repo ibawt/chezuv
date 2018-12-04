@@ -444,11 +444,11 @@
            [port (if (pair? split) (string->number (cadr split)) 0)]
            [s (make-ftype-pointer sockaddr_in (foreign-alloc (ftype-sizeof sockaddr_in)))]
            [r (uv-ip4-addr ip port s)])
-      (cond
-       ((= r 0) s)
-       (else
-        (foreign-free (ftype-pointer-address s))
-        #f))))
+      (if (= 0 r)
+          s
+          (begin
+            (foreign-free (ftype-pointer-address s))
+            (error 'ipv4->sockaddr "error in making ipv4" r)))))
 
   (define (uv/tcp-listen loop addr on-conn)
     (letrec ([s-addr (uv/ipv4->sockaddr addr)]
