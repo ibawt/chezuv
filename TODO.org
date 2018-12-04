@@ -1,0 +1,16 @@
+Chezuv things left to do:
+
+* Tasks
+** TODO move to scheme style macros everywhere
+** TODO make http handler thing 
+*** middleware
+*** no router
+*** must allow for async things in the middleware
+** TODO audit memory usage 
+*** especially the native allocations
+** TODO audit HTTP spec conformance
+** TODO implement HTTP/2
+** TODO make proper records for datastructures
+*** http requests/responses
+*** url functions
+** TODO fold the http / https function where ever possible

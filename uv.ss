@@ -51,6 +51,9 @@
   (define-record-type http-response
     (fields headers body status version code))
 
+  (define-record-type url
+    (fields protocol host path port))
+
   (define (nothing . args)
     #f)
 
@@ -60,14 +63,19 @@
     (apply format #t args)
     (newline))
 
-  (macro (check expr)
-    `(let ([r ,expr])
-       (unless (= 0 r)
-         (let ([errstr (if (uv-error? r)
-                           (uv-err-name r)
-                           (strerror (abs r)))])
-           (error ,(format #f "~a" expr) errstr r))
-         #t)))
+  (define-condition-type &uv/error &condition make-uv-error uv/error?
+    (code uv-error-code)
+    (message uv-error-message))
+
+  (define-syntax check
+    (syntax-rules ()
+      ((_ e)
+       (let ([err e])
+         (unless (= 0 err)
+           (let ([errstr (if (uv-error? err)
+                             (uv-err-name err)
+                             (strerror (abs err)))])
+             (raise (make-uv-error err errstr))))))))
 
   (define buf-pool '())
 
@@ -493,7 +501,7 @@
                                                   (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
                                                   (if (= n nb)
                                                       (lp (fn))
-                                                      (error 'check-ssl "probably need to loop but will be annoying "n)))
+                                                      (error 'check-ssl "probably need to loop but will be annoying " n)))
                                                 (error 'check-ssl "failed to read bytes" nb)))))))
                (else (raise (ssl/library-error)))))
             (k n)))))
@@ -579,6 +587,16 @@
       (lambda (k)
         (ssl/free-stream client)
         (k #t))))
+
+  (define (uv/listen-and-serve-http loop addr)
+    (lambda (k)
+      (uv/tcp-listen loop addr
+                     (lambda (status server client)
+                       (if (not status)
+                           (error 'listen-and-serve-http "failed to accept" status)
+                           (uv/serve-http client
+                                          (lambda (status)
+                                            (uv/close-stream client))))))))
 
   (define (uv/make-http-request loop url)
     (lambda (k)
