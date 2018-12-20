@@ -1,5 +1,6 @@
 ;; -*- geiser-scheme-implementation: chez -*-
 (import (chezscheme)
+        (openssl)
         (uv))
 
 (define (run-with-cost)
@@ -29,17 +30,12 @@
      (time
       (uv/call-with-loop
        (lambda (loop)
-         (uv/call-with-ssl-context #f #f #t
+         (ssl/call-with-context "fixtures/nginx/cert.pem"  "fixtures/nginx/key.pem" #f
                                    (lambda (ctx)
-                                     (let ([rx 0]
-                                           [url (uv/string->url "https://www.google.ca/")])
-                                       (let top ((n 0))
-                                         (let/async ([r (<- (uv/make-https-request loop ctx url))])
-                                                    (set! rx (+ 1 rx))
-                                                    (if (> rx iterations)
-                                                        (begin
-                                                          (apply display-http-request r)
-                                                          (format #t "iterations: ~a, rx: ~a\n" iterations rx)
-                                                          (done))
-                                                        (top (+ 1 n))))))))))))))
+                                     (uv/tcp-listen loop "127.0.0.1:8181"
+                                                    (lambda (status server client)
+                                                      (uv/serve-https ctx client
+                                                                      (lambda (done)
+                                                                        (format #t "done: ~a\n" done)))))
+                                     ))))))))
 (run)

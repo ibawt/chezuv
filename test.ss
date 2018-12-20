@@ -86,31 +86,52 @@
                  (let/async ([resp (<- (uv/make-https-request loop ctx url))])
                             (k resp)))))))))))
 
-(describe "serving http"
-  (it "should serve a simple http requests"
+;; (describe "serving http"
+;;   (it "should serve a simple http requests"
+;;       (let ([resp
+;;              (call/cc
+;;               (lambda (k)
+;;                 (uv/call-with-loop
+;;                  (lambda (loop)
+;;                    (uv/tcp-listen loop "127.0.0.1:8181"
+;;                                   (lambda (status server client)
+;;                                     (uv/serve-http client (lambda (status)
+;;                                                             (uv/close-stream client)))))
+;;                    (let/async ([resp (<- (uv/make-http-request loop (uv/string->url "http://localhost:8181")))])
+;;                               (k resp))))))])
+;;         (test-equal 200 (cadar resp)))))
+
+(describe "serving https"
+  (it "should serve a simple https request"
       (let ([resp
-             (call/cc
-              (lambda (k)
-                (uv/call-with-loop
-                 (lambda (loop)
-                   (uv/tcp-listen loop "127.0.0.1:8181"
-                                  (lambda (status server client)
-                                    (uv/serve-http client (lambda (status)
-                                                            (uv/close-stream client)))))
-                   (let/async ([resp (<- (uv/make-http-request loop (uv/string->url "http://localhost:8181")))])
-                              (k resp))))))])
+              (call/cc
+               (lambda (k)
+                 (uv/call-with-loop
+                  (lambda (loop)
+                    (ssl/call-with-context "./fixtures/nginx/cert.pem" "./fixtures/nginx/key.pem" #f
+                      (lambda (ctx)
+                        (uv/tcp-listen loop "127.0.0.1:9191"
+                                      (lambda (status server client)
+                                        (format #t "connected\n")
+                                        (uv/serve-https ctx client (lambda (status)
+                                                                      (uv/close-stream client)))))))
+                    (ssl/call-with-context "./fixtures/nginx/cert.pem" #f #t
+                      (lambda (ctx)
+                        ((uv/make-https-request loop ctx (uv/string->url "https://localhost:9191"))
+                        (lambda (resp)
+                          (k resp)))))))))])
         (test-equal 200 (cadar resp)))))
 
-(describe "http requests"
-  (with-nginx
-    (it "should make a simple http request"
-        (let ((resp (http-test-request "http://localhost:8080")))
-          (test-equal 200 (cadar resp))))
-    (it "should make a simple https request (verified)"
-        (let ([resp (https-test-request "https://localhost:9090" "./fixtures/nginx/cert.pem")])
-          (test-equal 200 (cadar resp))))
-    (it "should fail with a non verified cert"
-        (test-error #t (https-test-request "https://localhost:9090" #f)))))
+;; (describe "http requests"
+;;   (with-nginx
+;;     (it "should make a simple http request"
+;;         (let ((resp (http-test-request "http://localhost:8080")))
+;;           (test-equal 200 (cadar resp))))
+;;     (it "should make a simple https request (verified)"
+;;         (let ([resp (https-test-request "https://localhost:9090" "./fixtures/nginx/cert.pem")])
+;;           (test-equal 200 (cadar resp))))
+;;     (it "should fail with a non verified cert"
+;;         (test-error #t (https-test-request "https://localhost:9090" #f)))))
 
 (describe
  "url functions"

@@ -75,8 +75,8 @@
       (let ([len (bytevector-length bv)])
         (let loop ([i start])
           (cond
-           [(= item (bytevector-u8-ref bv i)) i]
            [(>= i len) #f]
+           [(= item (bytevector-u8-ref bv i)) i]
            (else (loop (+ 1 i))))))))
 
   (define from-c-string

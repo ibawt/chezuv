@@ -24,6 +24,7 @@
    ssl-error-want-write)
 
   (import (chezscheme)
+          (log)
           (utils))
 
   (define init
@@ -31,10 +32,6 @@
       ((ta6le)
        (begin
          (load-shared-object "libssl.so")))))
-
-  (define (info . args)
-    (apply format #t args)
-    (newline))
 
   (define-condition-type &ssl-error &condition make-ssl-error ssl-error?
     (code ssl-error-code)
@@ -162,7 +159,7 @@
       (let ([b (make-bytevector 2048)]
             [e (err-get-error)])
         (err-get-string-n e b (bytevector-length b))
-        (make-ssl-error e (from-c-string)))))
+        (make-ssl-error e (from-c-string b)))))
 
   (define ssl-new
     (foreign-procedure "SSL_new"
@@ -365,33 +362,37 @@
 
   (define ssl/call-with-context
     (lambda (cert key client? f)
-      (let ((ctx #f))
-        (dynamic-wind
-            (lambda () (set! ctx (ssl/make-context cert key client?)))
-            (lambda () (f ctx))
-            (lambda () (ssl/free-context ctx))))))
+      (let ([ctx (ssl/make-context cert key client?)])
+        (f ctx))))
+
+  (define-syntax simple-check
+    (syntax-rules ()
+      ((_ e)
+       (let ([err e])
+         (unless (= 1 err)
+           (raise (ssl/library-error)))))))
 
   (define ssl/make-context
-    (lambda (cert key client?)
-      (let ([ctx (ssl-ctx-new (if client? (tls-method) (tls-server-method)))])
-        (if (= 0 ctx)
-            (raise (ssl/library-error)))
-        (when (and cert key)
-            (let ([err (ssl-ctx-use-certificate-file ctx cert ssl-filetype-pem)])
-              (if (not (= 1 err))
-                  (raise (ssl/library-error))))
-            (let ([err (ssl-ctx-use-private-key-file ctx key ssl-filetype-pem)])
-              (if (not (= 1 err))
-                  (raise (ssl/library-error))))
-            (let ([err (ssl-ctx-check-private-key ctx)])
-              (if (not (= 1 err))
-                  (raise (ssl/library-error)))))
-        (ssl-ctx-load-verify-locations ctx cert ca-path)
-        (if client?
-            (begin
-              (ssl-ctx-set-verify ctx ssl/verify-peer 0)
-              (ssl-ctx-set-options ctx ssl-op-all))
-            (begin
-              (ssl-ctx-set-cipher-list ctx ssl-modern-cipher-list)
-              (ssl-ctx-set-options ctx ssl-op-modern-server)))
-        ctx))))
+    (let ([g (make-guardian)])
+     (lambda (cert key client?)
+       (let reclaim ([x (g)])
+         (when x
+           (ssl/free-context x)
+           (reclaim (g))))
+       (let ([ctx (ssl-ctx-new (if client? (tls-method) (tls-server-method)))])
+         (if (= 0 ctx)
+             (raise (ssl/library-error)))
+         (when (and cert key)
+           (simple-check (ssl-ctx-use-certificate-file ctx cert ssl-filetype-pem))
+           (simple-check (ssl-ctx-use-private-key-file ctx key ssl-filetype-pem))
+           (simple-check (ssl-ctx-check-private-key ctx)))
+         (simple-check (ssl-ctx-load-verify-locations ctx cert ca-path))
+         (if client?
+             (begin
+               (ssl-ctx-set-verify ctx ssl/verify-peer 0)
+               (ssl-ctx-set-options ctx ssl-op-all))
+             (begin
+               (simple-check (ssl-ctx-set-cipher-list ctx ssl-modern-cipher-list))
+               (ssl-ctx-set-options ctx ssl-op-modern-server)))
+         (g ctx)
+         ctx)))))

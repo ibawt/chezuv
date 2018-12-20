@@ -26,6 +26,7 @@
           (inet)
           (utils)
           (libuv)
+          (log)
           (openssl)
           (alloc)
           (irregex))
@@ -59,10 +60,6 @@
 
   (define uv-error? positive?)
 
-  (define (info . args)
-    (apply format #t args)
-    (newline))
-
   (define-condition-type &uv/error &condition make-uv-error uv/error?
     (code uv-error-code)
     (message uv-error-message))
@@ -94,9 +91,9 @@
     (lambda (x)
       (let* ([buf (make-bytevector 2048)]
              [n (strerror_r x buf 2048)])
-        (if (= 0 n)
-            (utf8->string (bytevector-truncate! buf (find-in-bytevector 0 buf 0)))
-            (error 'not-found "errno not found")))))
+        (if n
+            n
+            (error 'not-found "errno not found" x)))))
 
   (define (handle-type-name handle)
     (uv-handle-type-name (uv-handle-get-type handle)))
@@ -340,7 +337,7 @@
           (let ([newline-pos (find-in-bytevector 10 buf read-pos)])
             (if newline-pos
                 (send-buf bv start (- (inc newline-pos) read-pos) on-read)
-                (error 'newline-pos "line is really big and I didn't handle this case")))
+                (on-read #f #f)))
           (let ([len (if (<= buf-len (+ read-pos len))
                          (- buf-len read-pos)
                          len)])
@@ -546,7 +543,8 @@
   (define (tls-accept ctx stream)
     (let ([client (ssl/make-stream ctx #f)])
       (lambda (k)
-        ((check-ssl client stream (lambda () (ssl/accept client)))
+        ((check-ssl client stream (lambda ()
+                                    (ssl/accept client)))
          (lambda (val)
            (k (list client
                     (make-tls-reader client stream)
@@ -563,6 +561,7 @@
           #f)))
 
   (define (serve-http reader writer on-done)
+    (info "top of serve-http")
     (let/async ([req (<- (uv/read-http-response reader))]
                 [status (<- (uv/write-http-request writer req))])
                (if (keep-alive? req)

@@ -271,7 +271,7 @@
   (define strerror_r
     (foreign-procedure "strerror_r"
                        (int u8* size_t)
-                       int))
+                       string))
 
   (define uv-tcp-bind
     (foreign-procedure "uv_tcp_bind"
