@@ -26,6 +26,7 @@
           UV_CONNECT
           UV_WRITE
           UV_SHUTDOWN
+          UV_WORK
           UV_GETADDRINFO
           SIGHUP
           SIGINT
@@ -63,6 +64,13 @@
           strerror_r
           uv-tcp-bind
           handle-close
+          uv-async-init
+          uv-async-send
+          uv-timer-init
+          uv-timer-start
+          uv-timer-stop
+          uv-timer-again
+          uv-queue-work
           uv-listen
           uv-accept
           uv-ip4-addr)
@@ -106,6 +114,7 @@
   (define UV_CONNECT 2)
   (define UV_WRITE 3)
   (define UV_SHUTDOWN 4)
+  (define UV_WORK 7)
   (define UV_GETADDRINFO 8)
 
   (define SIGHUP 1)
@@ -291,6 +300,41 @@
   (define uv-ip4-addr
     (foreign-procedure "uv_ip4_addr"
                        (string int (* sockaddr_in))
+                       int))
+
+  (define uv-async-init
+    (foreign-procedure "uv_async_init"
+                       (void* void* void*)
+                       int))
+
+  (define uv-async-send
+    (foreign-procedure "uv_async_send"
+                       (void*)
+                       int))
+
+  (define uv-timer-init
+    (foreign-procedure "uv_timer_init"
+                       (void* void*)
+                       int))
+
+  (define uv-timer-start
+    (foreign-procedure "uv_timer_start"
+                       (void* void* integer-64 integer-64)
+                       int))
+
+  (define uv-timer-stop
+    (foreign-procedure "uv_timer_stop"
+                       (void*)
+                       int))
+
+  (define uv-timer-again
+    (foreign-procedure "uv_timer_again"
+                       (void*)
+                       int))
+
+  (define uv-queue-work
+    (foreign-procedure "uv_queue_work"
+                       (void* void* void* void*)
                        int))
 
   (define (walk-handles uv-loop on-handle)

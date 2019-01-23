@@ -1,9 +1,13 @@
 (library (log)
   (export
+   log-level
    info)
   (import (chezscheme))
 
+  (define log-level #t)
+
   (define (info . args)
-    (display "[INFO] ")
-    (apply format #t args)
-    (newline)))
+    (when log-level
+      (display "[INFO] ")
+      (apply format #t args)
+      (newline))))

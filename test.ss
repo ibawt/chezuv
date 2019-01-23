@@ -1,6 +1,7 @@
 ;; -*- geiser-scheme-implementation: chez -*-
 (import (chezscheme)
         (srfi s64 testing)
+        (log)
         (utils)
         (openssl)
         (uv))
@@ -27,8 +28,7 @@
                                (exit 1))))
     runner))
 
-(test-runner-factory
- (lambda () (my-simple-runner)))
+(test-runner-factory my-simple-runner)
 
 (test-begin "chezuv")
 (define test-pem
@@ -86,6 +86,21 @@
                  (let/async ([resp (<- (uv/make-https-request loop ctx url))])
                             (k resp)))))))))))
 
+(define run-command
+  (lambda (cmd)
+    (format #t "run-command?")
+    (let ([plist (process cmd)])
+      (let loop ([lines '()]
+                 [line (get-line (car plist))])
+        (format #t "line: ~a~%" line)
+        (if (eof-object? line)
+            (apply string-append (reverse lines))
+            (loop (cons line lines) (get-line (car plist))))))))
+
+(define curl-test-request
+  (lambda (url)
+    (string->number (run-command (format #f "curl --silent --write-out \"%{http_code}\" ~a" url)))))
+
 ;; (describe "serving http"
 ;;   (it "should serve a simple http requests"
 ;;       (let ([resp
@@ -112,14 +127,20 @@
                       (lambda (ctx)
                         (uv/tcp-listen loop "127.0.0.1:9191"
                                       (lambda (status server client)
-                                        (format #t "connected\n")
                                         (uv/serve-https ctx client (lambda (status)
-                                                                      (uv/close-stream client)))))))
-                    (ssl/call-with-context "./fixtures/nginx/cert.pem" #f #t
-                      (lambda (ctx)
-                        ((uv/make-https-request loop ctx (uv/string->url "https://localhost:9191"))
-                        (lambda (resp)
-                          (k resp)))))))))])
+                                                                     #f
+                                                                     ;; (uv/close-stream client)
+                                                                     ))))))
+                    (uv/call-after loop 100 0
+                                   (lambda ()
+                                     (info "about to make http call")
+                                     (ssl/call-with-context "./fixtures/nginx/cert.pem" #f #t
+                                                            (lambda (ctx)
+                                                              ((uv/make-https-request loop ctx (uv/string->url "https://localhost:9191"))
+                                                               (lambda (blah)
+                                                                 (info "blah: ~a" blah)
+                                                                 (k blah)))))
+                                     #f))))))])
         (test-equal 200 (cadar resp)))))
 
 ;; (describe "http requests"

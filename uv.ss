@@ -5,6 +5,7 @@
           uv/url-host
           uv/url-protocol
           uv/url-path
+          uv/call
           uv/url-port
           uv/close
           uv/stop
@@ -15,18 +16,19 @@
           uv/tcp-connect
           uv/make-idle
           uv/serve-http
+          uv/call-after
           <- ;; keyword for let/async
-
           let/async
           uv/serve-https
           uv/make-http-request
           uv/make-https-request
+          uv/call
           uv/getaddrinfo)
   (import (chezscheme)
           (inet)
           (utils)
-          (libuv)
           (log)
+          (libuv)
           (openssl)
           (alloc)
           (irregex))
@@ -166,16 +168,21 @@
    (foreign-free (ftype-pointer-address buf)))
 
  (define (uv/read-lines reader on-line)
-   (reader (make-bytevector 1024) 0 'eol
+   (reader (make-bytevector 4096) 0 'eol
            (lambda (bv num-read)
+             (info "read-lines callback: len: ~a" num-read)
              (if (and bv (on-line (trim-newline! bv num-read)))
-                 (uv/read-lines reader on-line)
-                 (on-line #f)))))
+                 (begin
+                   (uv/read-lines reader on-line))
+                 (begin
+                   (on-line #f))))))
 
  (define (read-headers reader done)
    (let ([lines '()])
      (uv/read-lines reader
                  (lambda (line)
+                   (info "read-headers line callback: ~a" (if line (utf8->string line) #f))
+                   (info "lines: ~a" (map utf8->string lines))
                    (if (or (not line) (= 0 (bytevector-length line)))
                        (begin
                          (if line
@@ -211,14 +218,11 @@
   (define uv/call-with-loop
     (lambda (f)
       (let ([l #f])
-        (dynamic-wind
-            (lambda ()
-              (set! l (uvloop-create))
-              (register-signal-handlers l))
-            (lambda ()
-              (f l)
-              (uv-run l 0))
-            (lambda () (uv-stop l))))))
+        (set! l (uvloop-create))
+        (register-signal-handlers l)
+        (f l)
+        (uv-run l 0)
+        (uv-stop l))))
 
   (define uv/getaddrinfo
     (lambda (loop name)
@@ -265,15 +269,15 @@
   (define (uv/make-idle loop)
     (lambda (k)
       (letrec* ([idle (make-handler UV_IDLE)]
-               [code (foreign-callable (lambda (ll)
-                                         (if (k)
-                                             #t
-                                             (begin
-                                               (unlock-object code)
-                                               (uv-idle-stop idle)
-                                               (foreign-free idle))))
-                                       (void*)
-                                       void)])
+                [code (foreign-callable (lambda (ll)
+                                          (if (k)
+                                              #t
+                                              (begin
+                                                (unlock-object code)
+                                                (uv-idle-stop idle)
+                                                (foreign-free idle))))
+                                        (void*)
+                                        void)])
         (check (uv-idle-init loop idle))
         (lock-object code)
         (check (uv-idle-start idle (foreign-callable-entry-point code))))))
@@ -344,19 +348,24 @@
             (bytevector-copy! buf read-pos bv start len)
             (set! read-pos (+ read-pos len))
             (when (>= read-pos buf-len)
+              (info "read-pos >= buf-len")
               (set! buf #f))
             (on-read bv len))))
     (lambda (bv start len on-read)
       (if buf
-          (send-buf bv start len on-read)
-          (reader (lambda (s b)
-                    (if s
-                        (begin
-                          (set! buf b)
-                          (set! read-pos 0)
-                          (set! buf-len (bytevector-length b))
-                          (send-buf bv start len on-read))
-                        (on-read #f #f)))))))
+          (begin
+            (info "sending old buf")
+            (send-buf bv start len on-read))
+          (begin
+            (info "no buf sending read request...")
+            (reader (lambda (s b)
+                     (if s
+                         (begin
+                           (set! buf b)
+                           (set! read-pos 0)
+                           (set! buf-len (bytevector-length b))
+                           (send-buf bv start len on-read))
+                         (on-read #f #f))))))))
 
 
   (define (uv/read-fully reader n on-done)
@@ -378,15 +387,39 @@
     (lambda (k)
       (read-headers reader
                     (lambda (headers)
+                      (info "response headers: ~a" headers)
+                      (if (pair? headers)
+                          (let* ([status (parse-status (car headers))]
+                                 [headers (parse-headers (cdr headers))]
+                                 [content-length (header->number headers "Content-Length")])
+                            (info "status: ~a" status)
+                            (info "headers: ~a" headers)
+                            (info "content-length: ~a" content-length)
+                            (if content-length
+                                (begin
+                                  (info "reading full content length")
+                                  (uv/read-fully reader content-length
+                                                 (lambda (body)
+                                                   (k (list status headers body)))))
+                                (k (list status headers #t))))
+                          (error 'eof "read to end of line"))))))
+
+  (define (uv/read-http-request reader)
+    (lambda (k)
+      (read-headers reader
+                    (lambda (headers)
                       (if (pair? headers)
                           (let* ([status (parse-status (car headers))]
                                  [headers (parse-headers (cdr headers))]
                                  [content-length (header->number headers "Content-Length")])
                             (if content-length
                                 (begin
-                                  (uv/read-fully reader content-length
-                                                 (lambda (body)
-                                                   (k (list status headers body)))))
+                                  (if (= 0 content-length)
+                                      (k (list status headers #f))
+                                      (uv/read-fully reader content-length
+                                                     (lambda (body)
+                                                       (info "read-full body: ~a" body)
+                                                       (k (list status headers body))))))
                                 (k (list status headers #t))))
                           (error 'eof "read to end of line"))))))
 
@@ -507,7 +540,8 @@
     (lambda (k)
       ((check-ssl tls stream (lambda () (ssl/shutdown tls))) k)))
 
-  (define (make-tls-writer client stream)
+  (define (make-tls-writer client stream
+)
     (lambda (buf)
       (lambda (k)
         (let ([buf (if (string? buf) (string->buf buf) buf)])
@@ -528,6 +562,7 @@
                            (let ([bv (make-bytevector n)])
                              (memcpy bv buf n)
                              (free-buf buf)
+                             (info "tls-reader: ~a" (utf8->string bv))
                              (on-read stream bv))))))))
 
   (define (tls-connect ctx stream)
@@ -550,7 +585,8 @@
                     (make-tls-reader client stream)
                     (make-tls-writer client stream))))))))
 
-  (define (uv/write-http-request writer req)
+  (define (uv/write-http-response writer req)
+    (info "about to write")
     (writer "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))
 
   (define (keep-alive? req)
@@ -561,12 +597,15 @@
           #f)))
 
   (define (serve-http reader writer on-done)
-    (info "top of serve-http")
-    (let/async ([req (<- (uv/read-http-response reader))]
-                [status (<- (uv/write-http-request writer req))])
+    (let/async ([req (<- (uv/read-http-request reader))]
+                [_ (info "serve-http after read")]
+                [status (<- (uv/write-http-response writer req))])
+               (info "write http request, sent ~a bytes" status)
                (if (keep-alive? req)
-                   (serve-http reader writer on-done)
-                   (on-done status))))
+                   (begin
+                     (serve-http reader writer on-done))
+                   (begin
+                     (on-done status)))))
 
   (define (uv/serve-https ctx stream on-done)
     ((tls-accept ctx stream)
@@ -606,14 +645,45 @@
                   [resp (<- (uv/read-http-response (uv/make-reader sock (lambda (b) (uv/stream-read sock b)))))])
                  (k resp))))
 
+  (define (uv/call loop f)
+    (letrec ([a (make-handler UV_ASYNC)]
+             [code (foreign-callable
+                    (lambda (h)
+                      (unlock-object code)
+                      (handle-close a nothing)
+                      (f))
+                    (void*)
+                    void)])
+      (lock-object code)
+      (check (uv-async-init loop a (foreign-callable-entry-point code)))
+      (check (uv-async-send a))))
+
+  (define (uv/call-after loop timeout repeat cb)
+    (letrec ([a (make-handler UV_TIMER)]
+             [code (foreign-callable
+                    (lambda (h)
+                      (unless (cb)
+                        (unlock-object code)
+                        (handle-close a nothing)))
+                    (void*)
+                    void)])
+      (lock-object code)
+      (check (uv-timer-init loop a))
+      (check (uv-timer-start a (foreign-callable-entry-point code) timeout repeat))))
+
   (define (uv/make-https-request loop ctx url)
     (lambda (k)
       (let/async ([addr (<- (uv/getaddrinfo loop (uv/url-host url)))]
                   [stream (<- (uv/tcp-connect loop (addr->sockaddr addr (uv/url-port url))))]
+                  [_ (info "https-request tcp connected")]
                   [client (<- (tls-connect ctx stream))]
-                  [status (<- ((caddr client) (format #f "GET ~a HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n\r\n" (uv/url-path url)
+                  [_ (info "after tls-connect")]
+                  [status (<- ((caddr client) (format #f "GET ~a HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\nContent-Length: 0\r\n\r\n" (uv/url-path url)
                                                    (uv/url-host url))))]
+                  [_ (info "issuing http request ~a" status)]
                   [resp (<- (uv/read-http-response (cadr client)))]
+                  [_ (info "resp = ~a" resp)]
                   [done (<- (tls-shutdown (car client) stream))])
+                 (info "done https request")
                  (k resp)))))
 

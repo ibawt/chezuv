@@ -382,8 +382,9 @@
        (let ([ctx (ssl-ctx-new (if client? (tls-method) (tls-server-method)))])
          (if (= 0 ctx)
              (raise (ssl/library-error)))
-         (when (and cert key)
-           (simple-check (ssl-ctx-use-certificate-file ctx cert ssl-filetype-pem))
+         (when cert
+           (simple-check (ssl-ctx-use-certificate-file ctx cert ssl-filetype-pem)))
+         (when key
            (simple-check (ssl-ctx-use-private-key-file ctx key ssl-filetype-pem))
            (simple-check (ssl-ctx-check-private-key ctx)))
          (simple-check (ssl-ctx-load-verify-locations ctx cert ca-path))
