@@ -502,47 +502,38 @@
       (ftype-set! uv-buf (len) buf n)
       buf))
 
-  (define (check-ssl client stream fn)
+  (define (ssl-type s)
+    (if (ssl/client? s) "CLIENT" "SERVER"))
+
+  (define (check-ssl client stream f)
     (lambda (k)
-      (let lp ([n (fn)])
+      (let lp ([n (f)])
         (if (ssl/error? n)
             (let ([e (ssl/get-error client n)])
               (cond
-               ((= e ssl-error-none) (k 0))
-               ((or (= e ssl-error-want-write)
-                    (= e ssl-error-want-read))
-                (flush-ssl client stream (lambda () (lp (fn)))))
-               ;; (= e ssl-error-want-write) (ssl-fill client stream (lambda () (lp (fn))))
-               ;; (= e ssl-error-want-read) (ssl-drain client stream (lambda () (lp (fn))))
+               ((= e ssl-error-want-read) (flush-ssl client stream (lambda () (lp (f)))))
                (else (raise (ssl/library-error)))))
             (k n)))))
 
   (define (ssl-drain client stream k)
-    (info "ssl-drain")
-    (let ([buf (ssl-output-buffer client)])
-      (if (positive? (ftype-ref uv-buf (len) buf))
-          (begin
-            (info "draining things")
-            ((uv/stream-write stream buf)
-            (lambda (n)
-              (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
-              (k))))
-          (k))))
+    (if (positive? (ssl/num-bytes client))
+        (let ([buf (ssl-output-buffer client)])
+          ((uv/stream-write stream buf)
+           (lambda (n)
+             (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
+             (k))))
+        (k)))
 
   (define (ssl-fill client stream k)
-    (info "ssl-fill")
-    (if #t ;;(ssl/should-drain client)
-        (let ([buf (get-buf)])
-          (uv/stream-read-raw stream
-                              (lambda (nb buf)
-                                (if nb
-                                    (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
-                                      (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                                      (if (= n nb)
-                                          (k)
-                                          (error 'check-ssl "probably need to loop but will be annoying " n))) ;; TODO: fix this I think at 16k
-                                    (error 'check-ssl "failed to read bytes" nb)))))
-        (k)))
+    (uv/stream-read-raw stream
+                        (lambda (nb buf)
+                          (if nb
+                              (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
+                                (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                                (if (= n nb)
+                                    (k)
+                                    (error 'check-ssl "probably need to loop but will be annoying " n))) ;; TODO: fix this I think at 16k
+                              (error 'check-ssl "failed to read bytes" nb)))))
 
   (define (flush-ssl client stream k)
     (ssl-drain client stream (lambda () (ssl-fill client stream k))))
@@ -578,22 +569,16 @@
   (define (tls-connect ctx stream)
     (let ([client (ssl/make-stream ctx #t)])
       (lambda (k)
-        ((check-ssl client stream (lambda ()
-                                    (ssl/connect client)))
-         (lambda (val)
-           (k (list client
-                    (make-tls-reader client stream)
-                    (make-tls-writer client stream))))))))
+        (k (list client
+                 (make-tls-reader client stream)
+                 (make-tls-writer client stream))))))
 
   (define (tls-accept ctx stream)
     (let ([client (ssl/make-stream ctx #f)])
       (lambda (k)
-        ((check-ssl client stream (lambda ()
-                                    (ssl/accept client)))
-         (lambda (val)
            (k (list client
                     (make-tls-reader client stream)
-                    (make-tls-writer client stream))))))))
+                    (make-tls-writer client stream))))))
 
   (define (uv/write-http-response writer req)
     (writer "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))

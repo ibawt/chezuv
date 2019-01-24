@@ -17,8 +17,9 @@
    ssl/set-ca-path!
    ssl/library-error
    ssl/call-with-context
-   ssl/should-drain
-   ssl/should-fill
+   ssl/num-bytes
+   ssl/clear-errors
+   ssl/client?
 
    ssl-error-none
    ssl-error-ssl
@@ -41,11 +42,23 @@
 
   (define ssl-filetype-pem 1)
 
+  (define ssl/client?
+    (lambda (s)
+      (ssl-stream-client? s)))
+
   (define (ssl/error? e)
     (negative? e))
 
   (define (ssl/get-error s n)
     (ssl-get-error (ssl-stream-ssl s) n))
+
+  (define bio-ctrl-pending
+    (foreign-procedure "BIO_ctrl_pending"
+                       (void*)
+                       size_t))
+
+  (define (ssl/num-bytes s)
+    (bio-ctrl-pending (ssl-stream-writer s)))
 
   (define ssl-error-none 0)
   (define ssl-error-ssl 1)
@@ -64,18 +77,31 @@
   (define ssl/verify-fail-if-no-peer-cert 2)
   (define ssl/verify-client-once 4)
 
-  (define-record-type ssl-stream (fields ssl reader writer))
+  (define-record-type ssl-stream (fields ssl reader writer client?))
+
+  (define err-clear-error
+    (foreign-procedure "ERR_clear_error"
+                       ()
+                       void))
+
+  (define (ssl/clear-errors)
+    (let lp ([n (err-get-error)]
+             [x 0])
+      (unless (= 0 n)
+        (info "~a: err-get-error: ~a" x n)
+        (lp (err-get-error)
+            (+ 1 x)))))
 
   (define ssl/make-stream
     (lambda (ctx client?)
       (let ([ssl (ssl-new ctx)]
             [reader (bio-new (bio-s-mem))]
             [writer (bio-new (bio-s-mem))])
+        (ssl-set-bio ssl reader writer)
         (if client?
             (ssl-set-connect-state ssl)
             (ssl-set-accept-state ssl))
-        (ssl-set-bio ssl reader writer)
-        (make-ssl-stream ssl reader writer))))
+        (make-ssl-stream ssl reader writer client?))))
 
   (define ssl/free-stream
     (lambda (s)
@@ -107,40 +133,23 @@
             bytes-read))))
 
   (define (ssl/read s buf len)
-    (let loop ([bytes-read 0])
-      (let ([n (ssl-read (ssl-stream-ssl s) (+ buf bytes-read) (clamp (- len bytes-read)))])
-        (if (positive? n)
-            (loop (+ bytes-read n))
-            (if (and (negative? n) (= bytes-read 0))
-                n
-                bytes-read)))))
+    (let ([n (ssl-read (ssl-stream-ssl s) buf len)])
+      n))
 
   (define (ssl/write s buf len)
-    (let loop ([bytes-written 0])
-      (let ([n (ssl-write (ssl-stream-ssl s) (+ buf bytes-written) (clamp (- len bytes-written)))])
-        (if (positive? n)
-            (loop (+ bytes-written n))
-            (if (and (negative? n) (= bytes-written 0))
-                n
-                bytes-written)))))
+      (let ([n (ssl-write (ssl-stream-ssl s) buf len)])
+        n))
 
   (define ssl/connect
     (lambda (s)
-      (if (not (ssl-in-connect-init (ssl-stream-ssl s)))
-          0
-          (ssl-connect (ssl-stream-ssl s)))))
+      (ssl-connect (ssl-stream-ssl s))))
 
   (define (ssl/shutdown s)
     (ssl-shutdown (ssl-stream-ssl s)))
 
   (define ssl/accept
     (lambda (s)
-      (if (= 0 (ssl-is-init-finished (ssl-stream-ssl s)))
-          1
-          (let ([n (ssl-accept (ssl-stream-ssl s))])
-            (if (<= n 0)
-                n
-                n)))))
+      (ssl-accept (ssl-stream-ssl s))))
 
   (define ssl-shutdown
     (foreign-procedure "SSL_shutdown"
