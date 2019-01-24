@@ -31,14 +31,6 @@
 (test-runner-factory my-simple-runner)
 
 (test-begin "chezuv")
-(define test-pem
-  (call-with-input-file "fixtures/nginx/cert.pem"
-    (lambda (p)
-      (let loop ([line (get-line p)]
-                 [result '()])
-        (if (eof-object? line)
-            (apply string-append (reverse result))
-            (loop (get-line p) (cons (format #f "~a\n" line) result)))))))
 
 (define-syntax it
   (syntax-rules ()

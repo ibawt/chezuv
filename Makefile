@@ -5,10 +5,7 @@ RUN_SCHEME := $(SCHEME) --libdirs $(SCHEME_LIB_DIRS) --debug-on-exception --prog
 
 .PHONY: test docker_image clean
 
-clean:
-	rm -f *.so *.html *.svg
-
-test:
+test: fixtures/nginx/cert.pem
 	@$(SCHEME) --libdirs $(SCHEME_LIB_DIRS) --debug-on-exception --program ./test.ss
 
 docker_image:
@@ -16,3 +13,12 @@ docker_image:
 
 server:
 	@$(RUN_SCHEME) ./run.ss
+
+fixtures/nginx/key.pem:
+	@openssl genrsa -out fixtures/nginx/key.pem 2048 > /dev/null
+
+fixtures/nginx/cert.pem: fixtures/nginx/key.pem
+	@openssl req -new -x509 -key fixtures/nginx/key.pem -out fixtures/nginx/cert.pem -days 3650 -subj="/C=CA/ST=Ottawa/L=Ottawa/O=Foobar/OU=Foobar/CN=example.com"
+
+clean:
+	rm -f *.so *.html *.svg fixtures/nginx/cert.pem fixtures/nginx/key.pem
