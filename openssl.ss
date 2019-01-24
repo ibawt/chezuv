@@ -17,6 +17,8 @@
    ssl/set-ca-path!
    ssl/library-error
    ssl/call-with-context
+   ssl/should-drain
+   ssl/should-fill
 
    ssl-error-none
    ssl-error-ssl
@@ -81,6 +83,12 @@
 
   (define (clamp x)
     (if (negative? x) 0 x))
+
+  (define (ssl/should-drain s)
+    (bio-should-write (ssl-stream-writer s)))
+
+  (define (ssl/should-fill s)
+    (bio-should-read (ssl-stream-reader s)))
 
   (define (ssl/drain-output-buffer ssl-stream buf len)
     (let loop ([bytes-written 0])
@@ -207,10 +215,20 @@
                        boolean))
 
   (define bio-flags-should-retry #x08)
+  (define bio-flags-should-read 1)
+  (define bio-flags-should-write 2)
 
   (define bio-should-retry
     (lambda (writer)
       (bio-test-flags writer bio-flags-should-retry)))
+
+  (define bio-should-read
+    (lambda (w)
+      (bio-test-flags w bio-flags-should-read)))
+
+  (define bio-should-write
+    (lambda (w)
+      (bio-test-flags w bio-flags-should-write)))
 
   (define ssl-in-init
     (foreign-procedure "SSL_in_init"

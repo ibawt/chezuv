@@ -512,16 +512,27 @@
                ((or (= e ssl-error-want-write)
                     (= e ssl-error-want-read))
                 (flush-ssl client stream (lambda () (lp (fn)))))
+               ;; (= e ssl-error-want-write) (ssl-fill client stream (lambda () (lp (fn))))
+               ;; (= e ssl-error-want-read) (ssl-drain client stream (lambda () (lp (fn))))
                (else (raise (ssl/library-error)))))
             (k n)))))
 
-  (define (flush-ssl client stream k)
+  (define (ssl-drain client stream k)
+    (info "ssl-drain")
     (let ([buf (ssl-output-buffer client)])
       (if (positive? (ftype-ref uv-buf (len) buf))
-          ((uv/stream-write stream buf)
-           (lambda (n)
-             (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
-             (k)))
+          (begin
+            (info "draining things")
+            ((uv/stream-write stream buf)
+            (lambda (n)
+              (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
+              (k))))
+          (k))))
+
+  (define (ssl-fill client stream k)
+    (info "ssl-fill")
+    (if #t ;;(ssl/should-drain client)
+        (let ([buf (get-buf)])
           (uv/stream-read-raw stream
                               (lambda (nb buf)
                                 (if nb
@@ -530,7 +541,11 @@
                                       (if (= n nb)
                                           (k)
                                           (error 'check-ssl "probably need to loop but will be annoying " n))) ;; TODO: fix this I think at 16k
-                                (error 'check-ssl "failed to read bytes" nb)))))))
+                                    (error 'check-ssl "failed to read bytes" nb)))))
+        (k)))
+
+  (define (flush-ssl client stream k)
+    (ssl-drain client stream (lambda () (ssl-fill client stream k))))
 
   (define (tls-shutdown tls stream)
     (lambda (k)
