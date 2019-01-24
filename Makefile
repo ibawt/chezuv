@@ -15,7 +15,7 @@ server:
 	@$(RUN_SCHEME) ./run.ss
 
 fixtures/nginx/key.pem:
-	@openssl genrsa -out fixtures/nginx/key.pem 2048 > /dev/null
+	@openssl genrsa -out fixtures/nginx/key.pem 2048 2> /dev/null
 
 fixtures/nginx/cert.pem: fixtures/nginx/key.pem
 	@openssl req -new -x509 -key fixtures/nginx/key.pem -out fixtures/nginx/cert.pem -days 3650 -subj="/C=CA/ST=Ottawa/L=Ottawa/O=Foobar/OU=Foobar/CN=example.com"
