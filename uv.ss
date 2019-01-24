@@ -523,28 +523,7 @@
                ((= e ssl-error-none) (k 0))
                ((or (= e ssl-error-want-write)
                     (= e ssl-error-want-read))
-                (let ([buf (ssl-output-buffer client)])
-                  (if (positive? (ftype-ref uv-buf (len) buf))
-                      ((uv/stream-write stream buf)
-                       (lambda (k)
-                         (info "wrote some stuff to a socket")
-                         (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
-                         (lp (fn))))
-                      (uv/stream-read-raw stream
-                                          (lambda (nb buf)
-                                            (if nb
-                                                (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
-                                                  (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                                                  (if (= n nb)
-                                                      (lp (fn))
-                                                      (error 'check-ssl "probably need to loop but will be annoying " n)))
-                                                (error 'check-ssl "failed to read bytes" nb)))))
-
-
-                  )
-                ;; (flush-ssl client stream (lambda () (lp (fn))))
-
-                )
+                (flush-ssl client stream (lambda () (lp (fn)))))
                (else (raise (ssl/library-error)))))
             (k n)))))
 
@@ -553,6 +532,7 @@
       (if (positive? (ftype-ref uv-buf (len) buf))
           ((uv/stream-write stream buf)
            (lambda (n)
+             (info "FLUSH wrote ~a bytes" n)
              (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
              (k)))
           (uv/stream-read-raw stream
@@ -560,10 +540,11 @@
                                 (if nb
                                     (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
                                       (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                                      (info "FLUSH fill-input-buffer: n = ~a, nb = ~a" n nb)
                                       (if (= n nb)
-                                          (k))
+                                          (k)
                                           (error 'check-ssl "probably need to loop but will be annoying " n)))
-                                (error 'check-ssl "failed to read bytes" nb))))))
+                                (error 'check-ssl "failed to read bytes" nb)))))))
 
   (define (tls-shutdown tls stream)
     (lambda (k)
