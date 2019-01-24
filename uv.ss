@@ -510,6 +510,7 @@
       (let lp ([n (f)])
         (if (ssl/error? n)
             (let ([e (ssl/get-error client n)])
+              ;; TODO: why do I not get any other type of error
               (cond
                ((= e ssl-error-want-read) (flush-ssl client stream (lambda () (lp (f)))))
                (else (raise (ssl/library-error)))))
