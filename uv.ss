@@ -168,10 +168,8 @@
    (foreign-free (ftype-pointer-address buf)))
 
  (define (uv/read-lines reader on-line)
-   (info "uv/read-lines")
    (reader (make-bytevector 4096) 0 'eol
            (lambda (bv num-read)
-             (info "read-lines callback: len: ~a" num-read)
              (if (and bv (on-line (trim-newline! bv num-read)))
                  (begin
                    (uv/read-lines reader on-line))
@@ -349,18 +347,14 @@
             (bytevector-copy! buf read-pos bv start len)
             (set! read-pos (+ read-pos len))
             (when (>= read-pos buf-len)
-              (info "read-pos >= buf-len")
               (set! buf #f))
 
-            (info "make-reader on-read len: ~a" len)
             (on-read bv len))))
     (lambda (bv start len on-read)
       (if buf
           (begin
-            (info "sending old buf")
             (send-buf bv start len on-read))
           (begin
-            (info "no buf sending read request...")
             (reader (lambda (s b)
                      (if s
                          (begin
@@ -390,19 +384,14 @@
     (lambda (k)
       (read-headers reader
                     (lambda (headers)
-                      (info "response headers: ~a" headers)
                       (if (pair? headers)
                           (let* ([status (parse-status (car headers))]
                                  [headers (parse-headers (cdr headers))]
                                  [content-length (header->number headers "Content-Length")])
-                            (info "status: ~a" status)
-                            (info "headers: ~a" headers)
-                            (info "content-length: ~a" content-length)
                             (if content-length
                                 (if (= 0 content-length)
                                     (k (list status headers #f))
                                     (begin
-                                      (info "reading full content length")
                                       (uv/read-fully reader content-length
                                                      (lambda (body)
                                                        (k (list status headers body))))))
@@ -423,7 +412,6 @@
                                       (k (list status headers #f))
                                       (uv/read-fully reader content-length
                                                      (lambda (body)
-                                                       (info "read-full body: ~a" body)
                                                        (k (list status headers body))))))
                                 (k (list status headers #t))))
                           (error 'eof "read to end of line"))))))
@@ -532,7 +520,6 @@
       (if (positive? (ftype-ref uv-buf (len) buf))
           ((uv/stream-write stream buf)
            (lambda (n)
-             (info "FLUSH wrote ~a bytes" n)
              (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
              (k)))
           (uv/stream-read-raw stream
@@ -540,29 +527,24 @@
                                 (if nb
                                     (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
                                       (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                                      (info "FLUSH fill-input-buffer: n = ~a, nb = ~a" n nb)
                                       (if (= n nb)
                                           (k)
-                                          (error 'check-ssl "probably need to loop but will be annoying " n)))
+                                          (error 'check-ssl "probably need to loop but will be annoying " n))) ;; TODO: fix this I think at 16k
                                 (error 'check-ssl "failed to read bytes" nb)))))))
 
   (define (tls-shutdown tls stream)
     (lambda (k)
       ((check-ssl tls stream (lambda () (ssl/shutdown tls))) k)))
 
-  (define (make-tls-writer client stream
-)
+  (define (make-tls-writer client stream)
     (lambda (buf)
       (lambda (k)
-        (info "tls-writer: ~a" buf)
         (let ([buf (if (string? buf) (string->buf buf) buf)])
           ((check-ssl client stream (lambda ()
-                                      (info "ssl/write")
                                       (ssl/write client
                                                  (ftype-pointer-address (ftype-ref uv-buf (base) buf))
                                                  (ftype-ref uv-buf (len) buf))))
            (lambda (n)
-             (info "ssl/write wrote ~a bytes" n)
              (flush-ssl client stream (lambda () (k n)))))))))
 
   (define (make-tls-reader client stream)
@@ -576,7 +558,6 @@
                            (let ([bv (make-bytevector n)])
                              (memcpy bv buf n)
                              (free-buf buf)
-                             (info "tls-reader: ~a" (utf8->string bv))
                              (on-read stream bv))))))))
 
   (define (tls-connect ctx stream)
@@ -686,15 +667,10 @@
     (lambda (k)
       (let/async ([addr (<- (uv/getaddrinfo loop (uv/url-host url)))]
                   [stream (<- (uv/tcp-connect loop (addr->sockaddr addr (uv/url-port url))))]
-                  [_ (info "https-request tcp connected")]
                   [client (<- (tls-connect ctx stream))]
-                  [_ (info "after tls-connect")]
                   [status (<- ((caddr client) (format #f "GET ~a HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\nContent-Length: 0\r\n\r\n" (uv/url-path url)
                                                    (uv/url-host url))))]
-                  [_ (info "issuing http request ~a" status)]
                   [resp (<- (uv/read-http-response (cadr client)))]
-                  [_ (info "resp = ~a" resp)]
                   [done (<- (tls-shutdown (car client) stream))])
-                 (info "done https request")
                  (k resp)))))
 

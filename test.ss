@@ -135,7 +135,6 @@
                                            (lambda (ctx)
                                              ((uv/make-https-request loop ctx (uv/string->url "https://localhost:9191"))
                                               (lambda (blah)
-                                                (info "blah: ~a" blah)
                                                 (k blah)))))))))])
         (test-equal 200 (cadar resp)))))
 
