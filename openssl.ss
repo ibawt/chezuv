@@ -20,6 +20,7 @@
    ssl/num-bytes
    ssl/clear-errors
    ssl/client?
+   ssl/get-selected-alpn
 
    ssl-error-none
    ssl-error-ssl
@@ -415,6 +416,9 @@
            (simple-check (ssl-ctx-use-private-key-file ctx key ssl-filetype-pem))
            (simple-check (ssl-ctx-check-private-key ctx)))
          (simple-check (ssl-ctx-load-verify-locations ctx cert ca-path))
+
+         (ssl/set-alpn-protos ctx alpn-protocols)
+         (ssl/set-alpn-callback ctx)
          (if client?
              (begin
                (ssl-ctx-set-verify ctx ssl/verify-peer 0)
@@ -423,4 +427,74 @@
                (simple-check (ssl-ctx-set-cipher-list ctx ssl-modern-cipher-list))
                (ssl-ctx-set-options ctx ssl-op-modern-server)))
          (g ctx)
-         ctx)))))
+         ctx))))
+
+  (define ssl-ctx-set-alpn-protos
+    (foreign-procedure "SSL_CTX_set_alpn_protos"
+                       (void* u8* unsigned-int)
+                       int))
+
+  (define alpn-protocols
+    (u8-list->bytevector (fold-left
+                          (lambda (acc x)
+                            (cons (string-length x) (append (map char->integer (string->list x)) acc))) '() 
+                            '("http/1.1" "h2"))))
+
+  (define ssl-select-next-proto
+    (foreign-procedure "SSL_select_next_proto"
+                       (void* void* u8* int u8* int)
+                       int))
+
+  (define (ssl/set-alpn-protos ctx protos)
+    (lock-object alpn-protocols)
+    (let ((n (ssl-ctx-set-alpn-protos ctx alpn-protocols (bytevector-length alpn-protocols))))
+      (info "set protos: ~a" n)
+      n))
+
+  (define npn-unsupported 0)
+  (define npn-negotiated 1)
+  (define npn-no-overlap 2)
+
+  ;; out == **char, len == *char
+  (define (alpn->string out len)
+    (let ([n (foreign-ref 'unsigned-8 len 0)])
+      (info "n = ~a" n)
+      (let lp ([i 0]
+               [s '()])
+        (if (>= i n)
+            (list->string (reverse s))
+            (lp (+ 1 i) (cons (integer->char (foreign-ref 'unsigned-8 (foreign-ref 'void* out 0) i)) s))))))
+
+  (define (ssl/set-alpn-callback ctx)
+    (let ([code (foreign-callable
+                 (lambda (ssl out outlen in inlen opaque)
+                   (let ((n (ssl-select-next-proto out outlen alpn-protocols (bytevector-length alpn-protocols)
+                                                   in inlen)))
+                     (if (= npn-negotiated n)
+                         0
+                         3)))
+                 (void* void* void* u8* int void*)
+                 int)])
+
+      (lock-object code)
+      (ssl-ctx-set-alpn-select-cb ctx (foreign-callable-entry-point code) 0)))
+
+  (define (ssl/get-selected-alpn s)
+    (let ([len (foreign-alloc (ftype-sizeof int))]
+          [out (foreign-alloc (ftype-sizeof iptr))])
+      (ssl-get0-alpn-selected (ssl-stream-ssl s) out len)
+      (let ((n (foreign-ref 'int len 0)))
+        (info "n = ~a" n)
+        (foreign-free len)
+        (foreign-free out)
+        "idk")))
+
+  (define ssl-get0-alpn-selected
+    (foreign-procedure "SSL_get0_alpn_selected"
+                       (void* void* void*)
+                       void))
+
+  (define ssl-ctx-set-alpn-select-cb
+    (foreign-procedure "SSL_CTX_set_alpn_select_cb"
+                       (void* void* void*)
+                       void)))
