@@ -26,6 +26,7 @@
           uv/getaddrinfo)
   (import (chezscheme)
           (inet)
+          (hpack)
           (utils)
           (log)
           (libuv)
@@ -43,6 +44,13 @@
        (value (lambda (name)
                 (let/async (next ...)
                            body ...))))
+
+      ((_ (((name ...) (<- value)) next ...) body ...)
+       (value (lambda (name ...)
+                (let/async (next ...)
+                           body ...))))
+
+
       ((_ ((name value) next ...) body ...)
        (let ((name value))
          (let/async (next ...)
@@ -570,16 +578,28 @@
   (define (tls-connect ctx stream)
     (let ([client (ssl/make-stream ctx #t)])
       (lambda (k)
-        (k (list client
-                 (make-tls-reader client stream)
-                 (make-tls-writer client stream))))))
+        ((check-ssl client stream
+                    (lambda ()
+                      (ssl/connect client)))
+         (lambda (n)
+           (k (list client
+                    (make-tls-reader client stream)
+                    (make-tls-writer client stream))))))))
 
   (define (tls-accept ctx stream)
     (let ([client (ssl/make-stream ctx #f)])
       (lambda (k)
-           (k (list client
-                    (make-tls-reader client stream)
-                    (make-tls-writer client stream))))))
+        ((check-ssl client stream
+                    (lambda ()
+                      (ssl/accept client)))
+         (lambda (n)
+           ((check-ssl client stream
+                       (lambda ()
+                         (ssl/do-handshake client)))
+            (lambda (n)
+              (k (list client
+                       (make-tls-reader client stream)
+                       (make-tls-writer client stream))))))))))
 
   (define (uv/write-http-response writer req)
     (writer "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))
@@ -600,13 +620,221 @@
                    (begin
                      (on-done status)))))
 
+  (define h2-frame-premamble-size (+ 3 1 1 4))
+
+  (define (bytevector->uv-buf bv)
+    (let ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
+          [b (get-buf)])
+      (memcpy2 b bv (bytevector-length bv))
+      (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 b))
+      (ftype-set! uv-buf (len) buf (bytevector-length bv))
+      buf))
+
+  (define memcpy2
+    (foreign-procedure "memcpy"
+                       (void* u8* int)
+                       void*))
+  (define h2-preface "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+
+  (define h2-frame-type-data 0)
+  (define h2-frame-type-headers 1)
+  (define h2-frame-type-priority 2)
+  (define h2-frame-type-rst-stream 3)
+  (define h2-frame-type-settings 4)
+  (define h2-frame-type-push-promise 5)
+  (define h2-frame-type-ping 6)
+  (define h2-frame-type-goaway 7)
+  (define h2-frame-type-window-update 8)
+  (define h2-frame-type-continuation 9)
+
+  (define h2-settings-table-size 1)
+  (define h2-settings-enable-push 2)
+  (define h2-settings-max-concurrent-streams 3)
+  (define h2-settings-initial-window-size 4)
+  (define h2-settings-max-frame-size 5)
+  (define h2-settings-max-header-list-size 6)
+
+  (define h2-error-no-error 0)
+  (define h2-error-protocol-error 1)
+  (define h2-error-internal-error 2)
+  (define h2-error-flow-control-error 3)
+  (define h2-error-settings-timeout 4)
+  (define h2-error-stream-closed 5)
+  (define h2-error-frame-size-error 6)
+  (define h2-error-refused-stream 7)
+  (define h2-error-cancel 8)
+  (define h2-error-compression-error 9)
+  (define h2-error-connect-error 10)
+  (define h2-error-enhance-your-calm 11)
+  (define h2-error-inadequate-security 12)
+  (define h2-error-http/1.1-required 13)
+
+  (define write-frame
+    (lambda (writer type flags id payload)
+      (lambda (k)
+        ;; TODO: all this copying is pretty terrible
+        ;; maybe should operate on the foreign buf directly
+        (let* ([payload-len (if payload (bytevector-length payload) 0)]
+               [buf (make-bytevector (+ payload-len h2-frame-premamble-size))])
+          (bytevector-u8-set! buf 0 (logand (fxsra payload-len 16) 255))
+          (bytevector-u8-set! buf 1 (logand (fxsra payload-len 8) 255))
+          (bytevector-u8-set! buf 2 (logand payload-len 255))
+          (bytevector-u8-set! buf 3 type )
+          (bytevector-u8-set! buf 4 flags)
+          (bytevector-u32-set! buf 5 id 'big)
+          (when (positive? payload-len)
+            (bytevector-copy! payload 0 buf h2-frame-premamble-size payload-len))
+          ((writer (bytevector->uv-buf buf)) k)))))
+
+  (define-record-type h2-frame
+    (fields type flags id payload))
+
+
+  (define read-frame
+    (lambda (reader)
+      (lambda (k)
+        (reader (make-bytevector h2-frame-premamble-size) 0 h2-frame-premamble-size
+                (lambda (bv num-read)
+                  (let ([len (bytevector-u24-ref bv 0 'big)]
+                        [type (bytevector-u8-ref bv 3)]
+                        [flags (bytevector-u8-ref bv 4)]
+                        [id (bytevector-u32-ref bv 5 'big)])
+                    (reader (make-bytevector len) 0 len
+                            (lambda (bv num-read)
+                              (k (make-h2-frame type flags id bv))))))))))
+
+
+  (define (async-reader reader)
+    (lambda (len)
+      (lambda (k)
+        (reader (make-bytevector len) 0 len
+                (lambda (bv num-read)
+                  (k bv num-read))))))
+
+  (define (h2-check-preface reader)
+    (lambda (k)
+      (reader (make-bytevector (string-length h2-preface)) 0 (string-length h2-preface)
+              (lambda (bv num-read)
+                (if (and (= num-read (string-length h2-preface)) (string=? (utf8->string bv)))
+                    (k #t)
+                    (error 'check-preface "invalid preface string" bv))))))
+
+  (define (h2-default-settings)
+    '((h2-settings-table-size 4096)
+      (h2-settings-enable-push #t)
+      (h2-settings-max-concurrent-streams +inf.0)
+      (h2-settings-initial-window-size 65535)
+      (h2-settings-max-frame-size 16384)
+      (h2-settings-max-header-list-size +inf.0)))
+
+  (define-condition-type &h2-error &condition make-h2-error h2-error?
+    (code h2-error-code)
+    (message h2-error-message))
+
+  (define h2-settings-id->symbol
+    (lambda (x)
+      (cond
+       ((= x h2-settings-table-size) 'h2-settings-table-size)
+       ((= x h2-settings-enable-push) 'h2-settings-enable-push)
+       ((= x h2-settings-max-concurrent-streams) 'h2-settings-max-concurrent-streams)
+       ((= x h2-settings-initial-window-size) 'h2-settings-initial-window-size)
+       ((= x h2-settings-max-frame-size) 'h2-settings-max-frame-size)
+       ((= x h2-settings-max-header-list-size) 'h2-settings-max-header-list-size)
+       (else (error 'h2-settings-id->symbol "invalid id" x)))))
+
+  (define (read-settings-frame frame)
+    (let ([p (h2-frame-payload frame)])
+      (unless (zero? (modulo (bytevector-length p) 6))
+        (raise (make-h2-error h2-error-frame-size-error "settings not divisble by 6")))
+      (let lp ([i 0]
+               [s '()])
+        (if (>= i (bytevector-length p))
+            s
+            (let ([id (h2-settings-id->symbol (bytevector-u16-ref p i 'big))]
+                  [value (bytevector-u32-ref p (+ i 2) 'big)])
+              (lp (+ i 6) (cons (list id value) s)))))))
+
+  (define (merge-alist old new)
+    (fold-left
+     (lambda (acc item)
+       (let ([other (assq (car item) new)])
+         (if other
+             (cons (list (car item) (cadr other)) acc)
+             (cons item acc))))
+     '() old))
+
+  (define h2-settings-ack 1)
+
+  (define (write-h2-ack-settings writer)
+    (write-frame writer h2-frame-type-settings h2-settings-ack 0 #f))
+
+  (define h2-header-flag-end-stream 1)
+  (define h2-header-flag-end-headers 4)
+  (define h2-header-flag-padded 8)
+  (define h2-header-flag-priority 16)
+
+
+  (define (read-h2-header-frame frame)
+    (let ([p (h2-frame-payload frame)]
+          [ pad-length #f]
+          [e #f ]
+          [stream-dep #f]
+          [weight #f]
+          [i  0])
+      (when (logbit? h2-header-flag-padded (h2-frame-flags frame))
+        (set! pad-length (bytevector-u8-ref p 0))
+        (set! i 1))
+      (when (logbit? h2-header-flag-priority (h2-frame-flags frame))
+        (set! e (logbit? 32 (bytevector-u32-ref p i 'big)))
+        (set! stream-dep (logand (bytevector-u32-ref p i 'big) #x7fffffff))
+        (set! weight (bytevector-u8-ref p (+ i 4))))
+      (info "pad-length: ~a" pad-length)
+      (info "flags: ~a" (h2-frame-flags frame))
+      (info "payload is: ~a" p)
+      (info "decoded headers: ~a" (hpack/decode p i))
+      )
+    )
+
+  (define serve-http2
+    (lambda (reader writer on-done)
+      (info "http2!")
+      (let/async ([settings (h2-default-settings)]
+                  [_ (<- (h2-check-preface reader))] ;; check preface for http2
+                  [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))]) ;; send our settings)
+        (let lp ()
+          (let/async ([frame (<- (read-frame reader))]
+                      [type (h2-frame-type frame)])
+            (cond
+              ((= h2-frame-type-settings type) (begin
+                                                 (set! settings (merge-alist settings (read-settings-frame frame)))
+                                                 ((write-h2-ack-settings writer) (lambda (n) (lp)))))
+              ((= h2-frame-type-headers type) (begin
+                                                (info "headers")
+                                                (let ([header (read-h2-header-frame frame)])
+                                                  (info "parsed a header lulz")
+                                                  (lp))))
+              ((= h2-frame-type-window-update type) (begin
+                                                      (info "window update")
+                                                      (let ([size (bytevector-u32-ref (h2-frame-payload frame) 0 'big)])
+                                                        (info "flags: ~a, stream-id: ~a" (h2-frame-flags frame) (h2-frame-id frame))
+                                                        (info "window-size: ~a" size)
+                                                        (lp))))
+              (else "idk: ~a" (h2-frame-type frame))))
+          )
+        )))
+
+
   (define (uv/serve-https ctx stream on-done)
     ((tls-accept ctx stream)
      (lambda (tls)
-       (serve-http (cadr tls) (caddr tls)
-                   (lambda (ok)
-                     (ssl/free-stream (car tls))
-                     (on-done ok))))))
+       (case (ssl/get-selected-alpn (car tls))
+         (h2 (serve-http2 (cadr tls) (caddr tls)
+                          (lambda (ok)
+                            (ssl/free-stream (car tls) (on-done ok)))))
+         (http/1.1 (serve-http (cadr tls) (caddr tls)
+                               (lambda (ok)
+                                 (ssl/free-stream (car tls))
+                                 (on-done ok))))))))
 
   (define (uv/serve-http stream on-done)
     (serve-http (uv/make-reader stream (lambda (b) (uv/stream-read stream b)))

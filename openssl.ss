@@ -21,6 +21,7 @@
    ssl/clear-errors
    ssl/client?
    ssl/get-selected-alpn
+   ssl/do-handshake
 
    ssl-error-none
    ssl-error-ssl
@@ -42,6 +43,14 @@
     (message ssl-error-message))
 
   (define ssl-filetype-pem 1)
+
+  (define ssl-do-handshake
+    (foreign-procedure "SSL_do_handshake"
+                       (void*)
+                       int))
+
+  (define (ssl/do-handshake s)
+    (ssl-do-handshake (ssl-stream-ssl s)))
 
   (define ssl/client?
     (lambda (s)
@@ -89,7 +98,6 @@
     (let lp ([n (err-get-error)]
              [x 0])
       (unless (= 0 n)
-        (info "~a: err-get-error: ~a" x n)
         (lp (err-get-error)
             (+ 1 x)))))
 
@@ -448,7 +456,6 @@
   (define (ssl/set-alpn-protos ctx protos)
     (lock-object alpn-protocols)
     (let ((n (ssl-ctx-set-alpn-protos ctx alpn-protocols (bytevector-length alpn-protocols))))
-      (info "set protos: ~a" n)
       n))
 
   (define npn-unsupported 0)
@@ -458,7 +465,6 @@
   ;; out == **char, len == *char
   (define (alpn->string out len)
     (let ([n (foreign-ref 'unsigned-8 len 0)])
-      (info "n = ~a" n)
       (let lp ([i 0]
                [s '()])
         (if (>= i n)
@@ -484,10 +490,16 @@
           [out (foreign-alloc (ftype-sizeof iptr))])
       (ssl-get0-alpn-selected (ssl-stream-ssl s) out len)
       (let ((n (foreign-ref 'int len 0)))
-        (info "n = ~a" n)
-        (foreign-free len)
-        (foreign-free out)
-        "idk")))
+        (let ([alpn
+               (let lp ([s '()]
+                        [i  0])
+                 (if (>= i n)
+                     (list->string (reverse s))
+                     (lp (cons (integer->char (foreign-ref 'unsigned-8 (foreign-ref 'void* out 0) i)) s)
+                         (+ 1 i))))])
+          (foreign-free len)
+          (foreign-free out)
+          (string->symbol alpn)))))
 
   (define ssl-get0-alpn-selected
     (foreign-procedure "SSL_get0_alpn_selected"
