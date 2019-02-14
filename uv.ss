@@ -791,9 +791,9 @@
       (info "pad-length: ~a" pad-length)
       (info "flags: ~a" (h2-frame-flags frame))
       (info "payload is: ~a" p)
-      (info "decoded headers: ~a" (hpack/decode p i))
-      )
-    )
+      (let ([h (hpack/decode p i)])
+        (info "decoded headers: ~a" h)
+        h)))
 
   (define serve-http2
     (lambda (reader writer on-done)
