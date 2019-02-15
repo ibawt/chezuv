@@ -774,7 +774,7 @@
   (define h2-header-flag-priority 16)
 
 
-  (define (read-h2-header-frame frame)
+  (define (read-h2-header-frame frame table)
     (let ([p (h2-frame-payload frame)]
           [ pad-length #f]
           [e #f ]
@@ -791,7 +791,7 @@
       (info "pad-length: ~a" pad-length)
       (info "flags: ~a" (h2-frame-flags frame))
       (info "payload is: ~a" p)
-      (let ([h (hpack/decode p i)])
+      (let ([h (hpack/decode p i table)])
         (info "decoded headers: ~a" h)
         h)))
 
@@ -800,7 +800,9 @@
       (info "http2!")
       (let/async ([settings (h2-default-settings)]
                   [_ (<- (h2-check-preface reader))] ;; check preface for http2
-                  [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))]) ;; send our settings)
+                  [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))]
+                  [header-table (hpack/make-dynamic-table 4096)]
+                  ) ;; send our settings)
         (let lp ()
           (let/async ([frame (<- (read-frame reader))]
                       [type (h2-frame-type frame)])
@@ -810,7 +812,7 @@
                                                  ((write-h2-ack-settings writer) (lambda (n) (lp)))))
               ((= h2-frame-type-headers type) (begin
                                                 (info "headers")
-                                                (let ([header (read-h2-header-frame frame)])
+                                                (let ([header (read-h2-header-frame frame header-table)])
                                                   (info "parsed a header lulz")
                                                   (lp))))
               ((= h2-frame-type-window-update type) (begin

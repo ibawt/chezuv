@@ -1,5 +1,6 @@
 (library (hpack)
   (export hpack/decode
+          hpack/make-dynamic-table
           hpack/encode)
   (import (chezscheme)
           (log))
@@ -293,6 +294,7 @@
               (set! num-bits (+ num-bits 8))
               (lp (+ bits-read 8))))))
     (lambda (num-bits-requested peek?)
+      ;; num-bits-requested will never exceed 30, see huffman table
       (when (< num-bits num-bits-requested)
         (read-more num-bits-requested))
       (let ([r (fxlogand (bitmask num-bits-requested) (fxsra shift-register (- num-bits num-bits-requested)))])
@@ -311,12 +313,12 @@
               (if (pair? entry-list)
                   (let ([c (b-r (caddr (car entry-list)) #t)])
                     (if (= c (cadr (car entry-list)))
-                        (begin
+                        (let ([char (integer->char (car (car entry-list)))])
                           (b-r (caddr (car entry-list)) #f)
                           (set! bits-read (+ bits-read (caddr (car entry-list))))
-                          (if (>= (/ bits-read 8 ) octets)
-                              (list->string (reverse s))
-                              (char-loop (cons (integer->char (car (car entry-list))) s))))
+                          (if (>= (/ (+ bits-read 7) 8 ) octets)
+                              (list->string (reverse (cons char s)))
+                              (char-loop (cons char s))))
                         (inner (cdr entry-list))))
                   (num-bits-loop (cdr table))))
             (error 'decode-huffman-string "out of entries?")))))
@@ -337,31 +339,33 @@
   (define (decode-prefixed-integer prefix reader initial)
     ;; TODO: add the limits in
     ;; and make this less set!'ey
-    (if (< initial (ash 1 prefix))
+    (if (< initial (fxsll 1 prefix))
         initial
         (let ([m 0]
               [i initial]
               [b (reader #f)])
           (let lp ()
-            (set! i (+ i (* (ash 1 m) (logand b 127))))
+            (set! i (+ i (* (fxsll 1 m) (fxlogand b 127))))
             (set! m (+ m 7))
             (set! b (reader #f))
-            (if (= 128 (logand b 128))
+            (if (= 128 (fxlogand b 128))
                 (lp)
                 i)))))
 
   (define (decode-string-literal reader)
     (let ([c (reader #f)])
-      (let ([huffman-encoded? (logbit? 7 c)]
-            [octets (decode-prefixed-integer 7 reader (logand c #x7f))])
-        (info "huffman-encoded?: ~a,octets: ~a" huffman-encoded? octets)
+      (let ([huffman-encoded? (fxlogbit? 7 c)]
+            [octets (decode-prefixed-integer 7 reader (fxlogand c #x7f))])
         (if huffman-encoded?
             (decode-huffman-string reader octets)
-            (error 'decode-string-literal "not done"))
-        )))
+            (let lp ([s '()]
+                     [i  0])
+              (if (>= i octets)
+                  (list->string (reverse s))
+                  (lp (cons (integer->char (reader #f)) s) (+ i 1))))))))
 
 (define (bitmask bits)
-  (- (ash 1 bits) 1))
+  (- (fxsll 1 bits) 1))
 
 (define index-header-field #b10000000)
 (define literal-header-field #b01000000)
@@ -431,34 +435,80 @@
        via
        www-authenticate)))
 
-(define (hpack/decode bytes start)
+  (define static-table-length (vector-length static-table))
+
+  (define-record-type dynamic-table
+    (fields (mutable buffer) head tail size))
+
+  (define (hpack/make-dynamic-table length)
+    (make-dynamic-table '() 0 0 0))
+
+  (define (dynamic-table-insert! table value)
+    (info "adding ~a to dynamic table" value)
+    (dynamic-table-buffer-set! table (cons value (dynamic-table-buffer table))))
+
+  (define (mtrace fmt v)
+    (info fmt v)
+    v)
+
+  (define (header-ref table index)
+    (mtrace "header-ref: ~a"
+           (if (<= index static-table-length)
+               (vector-ref static-table index)
+               (let lp ([n 0]
+                        [vals (dynamic-table-buffer table)])
+                 (if (pair? vals)
+                     (if (= n index)
+                         (car vals)
+                         (lp (+ n 1) (cdr vals)))
+                     (error 'header-ref "index not found" index))))))
+
+  (define (hpack/decode bytes start header-table)
   (let ([r (bytevector-reader bytes start)])
     (let lp ([headers '()])
       (info "headers: ~a" headers)
       (let ([c (r #f)])
-        (format #t "c: ~8,'0b\n" c)
         (if c
             (cond
-             [(logbit? 7 c) (let* ([n (decode-prefixed-integer 7 r (logand c #x7f))]
-                                   [h (vector-ref static-table n)])
-                              (info "indexed header field: ~a" h)
+             [(fxlogbit? 7 c) (let* ([n (decode-prefixed-integer 7 r (logand c #x7f))]
+                                     [h (header-ref header-table n)])
+                                (when (= 0 n)
+                                  (error 'hpack/decode "invalid index for header" n))
                               (lp (cons h headers)))]
-             [(and (not (logbit? 7 c))
-                   (logbit? 6 c))
+             [(and (not (fxlogbit? 7 c))
+                   (fxlogbit? 6 c))
               (begin
-                (info "literal header field")
                 (let ([index (logand c #b00111111)])
                   (if (= 0 index)
-                      (begin
-                        (info "idk"))
-                      (begin
-                        (let* ([i (decode-prefixed-integer 6 r (logand c (bitmask 6)))]
-                               [h (vector-ref static-table i)])
-                          (info "decoded int: ~a" i)
-                          (info "h:~a" h)
-                          (lp (cons (list h (decode-string-literal r)) headers)))))))
-              ]
-             )
+                      (let ([h (decode-string-literal r)]
+                            [v (decode-string-literal r)])
+                        (dynamic-table-insert! header-table (list h v))
+                        (lp (cons (list h v) headers)))
+                      (let* ([i (decode-prefixed-integer 6 r (logand c (bitmask 6)))]
+                             [h (header-ref header-table i)]
+                             [v (decode-string-literal r)])
+                        (dynamic-table-insert! header-table v)
+                        (lp (cons (list h v) headers))))))]
+
+             [(= 0 (fxsra c 4))
+                 (let ([index (logand c (bitmask 4))])
+                   (if (= 0 index)
+                       (let ([h (decode-string-literal r)]
+                             [v (decode-string-literal r)])
+                         (lp (cons (list h v) headers)))
+                       (let* ([i (decode-prefixed-integer 4 r (logand c (bitmask 4)))]
+                              [h (header-ref header-table i)]
+                              [v (decode-string-literal r)])
+                         (lp (cons (list h v) headers)))))]
+             [(= #b001 (fxsra c 5))
+              (begin
+                (info "table size udpate")
+                (let ([n (decode-prefixed-integer 5 r (logand c (bitmask 5)))])
+                  (info "new dynamic table size: ~a" n))
+                (lp headers))]
+             (else (begin
+                     (info "else :()")
+                     (lp headers))))
             headers))))))
 
 
