@@ -294,13 +294,12 @@
           (if (= (bitmask num-bits) shift-register)
               'end-of-string
               shift-register)
-          (let ([r (fxlogand (bitmask num-bits-requested) (fxsra shift-register (- num-bits num-bits-requested)))])
-            (if (= match-value r)
-                (begin
-                  (set! num-bits (- num-bits num-bits-requested))
-                  (set! shift-register (fxlogand shift-register (bitmask num-bits)))
-                  #t)
-                #f)))))
+          (if (= match-value (fxlogand (bitmask num-bits-requested) (fxsra shift-register (- num-bits num-bits-requested))))
+              (begin
+                (set! num-bits (- num-bits num-bits-requested))
+                (set! shift-register (fxlogand shift-register (bitmask num-bits)))
+                #t)
+              #f))))
 
   (define (decode-huffman-string reader octets)
     (let ([bit-reader (bit-reader reader octets)])
@@ -313,7 +312,6 @@
                  (matched? (char-loop (cons (integer->char (huffman-entry-char (car table))) s)))
                  (else (table-loop (cdr table)))))
             (error 'decode-huffman-string "no matching huffman bit pattern"))))))
-
 
   (define (hpack/encode headers)
     #f)
