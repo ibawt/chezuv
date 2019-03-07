@@ -634,6 +634,7 @@
     (foreign-procedure "memcpy"
                        (void* u8* int)
                        void*))
+
   (define h2-preface "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 
   (define h2-frame-type-data 0)
@@ -688,7 +689,6 @@
 
   (define-record-type h2-frame
     (fields type flags id payload))
-
 
   (define read-frame
     (lambda (reader)
@@ -773,10 +773,12 @@
   (define h2-header-flag-padded 8)
   (define h2-header-flag-priority 16)
 
+  (define-record-type h2-header-frame
+    (fields exclusive? stream-dependency weight headers))
 
   (define (read-h2-header-frame frame table)
     (let ([p (h2-frame-payload frame)]
-          [ pad-length #f]
+          [pad-length #f]
           [e #f ]
           [stream-dep #f]
           [weight #f]
@@ -797,7 +799,6 @@
 
   (define serve-http2
     (lambda (reader writer on-done)
-      (info "http2!")
       (let/async ([settings (h2-default-settings)]
                   [_ (<- (h2-check-preface reader))] ;; check preface for http2
                   [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))]
@@ -832,7 +833,7 @@
        (case (ssl/get-selected-alpn (car tls))
          (h2 (serve-http2 (cadr tls) (caddr tls)
                           (lambda (ok)
-                            (ssl/free-stream (car tls) (on-done ok)))))
+                            (ssl/free-stream (car tls)) (on-done ok))))
          (http/1.1 (serve-http (cadr tls) (caddr tls)
                                (lambda (ok)
                                  (ssl/free-stream (car tls))
