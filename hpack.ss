@@ -324,12 +324,12 @@
              (set! shift-register 0)
              (buf)))
        ([value bits-to-write]
-        (info "value: ~a, bits-to-write: ~a" value bits-to-write)
+        ;; (info "value: ~a, bits-to-write: ~a" value bits-to-write)
         (let lp ((bits-written 0))
           (if (= bits-written bits-to-write)
               bits-to-write
               (let ([bits-to-fill (min (- bits-to-write bits-written) (- 8 num-bits))])
-                (info "bits-to-fill: ~a" bits-to-fill)
+                ;; (info "bits-to-fill: ~a" bits-to-fill)
                 (if (zero? bits-to-fill)
                     (begin
                       (put-u8 out shift-register)
@@ -363,10 +363,12 @@
                     (lp (+ 1 i))))))))
 
   (define (encode-string-literal writer s)
+    ;; TODO: huffman encode
+    (writer 0 1) ;; no huffman :(
     (encode-prefixed-integer writer 7 (string-length s))
     (string-for-each
      (lambda (s)
-       (writer s 8)) s))
+       (writer (char->integer s) 8)) s))
 
   (define (hpack/encode headers)
     (let ([writer (bit-writer)])
@@ -380,9 +382,9 @@
                           (writer 1 1) ; write to bit 7
                           (encode-prefixed-integer writer 7 static-entry))
                         (begin
-                          (writer #b11 2)
+                          (writer #b01 2)
                           (encode-prefixed-integer writer 6 static-entry)
-                          (encode-string-literal writer (cadr (car h)))))
+                          (encode-string-literal writer (cadar h))))
                     (info "encode a static entry"))
                   (begin
                     (info "encode a dyn entry")))

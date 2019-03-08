@@ -705,7 +705,6 @@
                             (lambda (bv num-read)
                               (k (make-h2-frame type flags id bv))))))))))
 
-
   (define (async-reader reader)
     (lambda (len)
       (lambda (k)
@@ -805,9 +804,9 @@
 
   (define (process-h2-request headers payload)
     (info "process-h2-request: ~a ~a" headers payload)
-    (let ([resp-headers '((:status 200))])
+    (let ([resp-headers '((:status 200) (via "ChezScheme"))])
       (let ([encoded-headers (hpack/encode resp-headers)])
-        (info "payload = ~a" payload)
+        (info "encoded-headers: ~a" encoded-headers)
         (make-frame h2-frame-type-headers
                     (fxlogor h2-header-flag-end-headers h2-header-flag-end-stream)
                     1
