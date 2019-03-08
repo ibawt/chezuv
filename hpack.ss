@@ -363,6 +363,13 @@
                     i
                     (lp (+ 1 i))))))))
 
+  (define-syntax with-bit-writer
+    (syntax-rules ()
+      ((_ e body ...)
+       (let ([e (bit-writer)])
+         body ...
+         (e)))))
+
   (define (encode-huffman-string s)
     (let ([w (bit-writer)])
       (string-for-each
