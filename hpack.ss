@@ -313,8 +313,81 @@
                  (else (table-loop (cdr table)))))
               (error 'decode-huffman-string "no matching huffman bit pattern"))))))
 
+  (define (bit-writer)
+    (define shift-register 0)
+    (define num-bits 0)
+    (let-values ([(out buf) (open-bytevector-output-port)])
+      (case-lambda
+       ([] (when (positive? num-bits)
+             (put-u8 out (fxlogor (fxsll shift-register (- 8 num-bits)) (bitmask (- 8 num-bits))))
+             (set! num-bits 0)
+             (set! shift-register 0)
+             (buf)))
+       ([value bits-to-write]
+        (info "value: ~a, bits-to-write: ~a" value bits-to-write)
+        (let lp ((bits-written 0))
+          (if (= bits-written bits-to-write)
+              bits-to-write
+              (let ([bits-to-fill (min (- bits-to-write bits-written) (- 8 num-bits))])
+                (info "bits-to-fill: ~a" bits-to-fill)
+                (if (zero? bits-to-fill)
+                    (begin
+                      (put-u8 out shift-register)
+                      (set! shift-register 0)
+                      (set! num-bits 0))
+                    (begin
+                      (set! shift-register
+                            (fxlogor (fxsll shift-register bits-to-fill)
+                                     (fxlogand (bitmask bits-to-fill) (fxsra value (- bits-to-write bits-written bits-to-fill)))))
+                      (set! num-bits (+ num-bits bits-to-fill))))
+                (lp (+ bits-written bits-to-fill)))))))))
+
+  (define (list-equal? a b)
+    (cond
+     ((and (null? a) (null? b)) #t)
+     ((and (pair? a) (pair? b) (eq? (car a) (car b)))
+      (list-equal? (cdr a) (cdr b)))
+     (else #f)))
+
+  (define (find-static-entry-for-header h)
+    (let lp ([i 0])
+      (if (>= i (vector-length static-table))
+          #f
+          (let ([entry (vector-ref static-table i)])
+            (if (pair? entry)
+                (if (list-equal? entry h)
+                    i
+                    (lp (+ 1 i)))
+                (if (eq? entry (car h))
+                    i
+                    (lp (+ 1 i))))))))
+
+  (define (encode-string-literal writer s)
+    (encode-prefixed-integer writer 7 (string-length s))
+    (string-for-each
+     (lambda (s)
+       (writer s 8)) s))
+
   (define (hpack/encode headers)
-    #f)
+    (let ([writer (bit-writer)])
+      (let lp ([h headers])
+        (if (pair? h)
+            (let ([static-entry (find-static-entry-for-header (car h))])
+              (if static-entry
+                  (let ([entry (vector-ref static-table static-entry)])
+                    (if (pair? entry)
+                        (begin
+                          (writer 1 1) ; write to bit 7
+                          (encode-prefixed-integer writer 7 static-entry))
+                        (begin
+                          (writer #b11 2)
+                          (encode-prefixed-integer writer 6 static-entry)
+                          (encode-string-literal writer (cadr (car h)))))
+                    (info "encode a static entry"))
+                  (begin
+                    (info "encode a dyn entry")))
+              (lp (cdr h)))
+            (writer)))))
 
   (define (bytevector-reader bv start)
     (let ([position start])
@@ -325,6 +398,14 @@
               (unless peek?
                 (set! position (+ 1 position)))
               c)))))
+
+  (define (encode-prefixed-integer writer prefix i)
+    (if (< i (bitmask prefix))
+        (writer i prefix)
+        (let lp ([i (- i  (bitmask prefix))])
+          (when (>= i 128)
+            (writer (+ 128 (mod i 128)) 8)
+            (lp (/ i 128))))))
 
   (define (decode-prefixed-integer prefix reader initial)
     ;; TODO: add the limits in

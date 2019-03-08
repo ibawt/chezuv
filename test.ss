@@ -126,9 +126,25 @@
                     (ssl/call-with-context "./fixtures/nginx/cert.pem" #f #t
                                            (lambda (ctx)
                                              ((uv/make-https-request loop ctx (uv/string->url "https://localhost:9191"))
-                                              (lambda (blah)
+                                               (lambda (blah)
                                                 (k blah)))))))))])
         (test-equal 200 (cadar resp)))))
+
+(describe "http2 basic"
+  (it "should do something related to http2"
+      (let ([resp (call/cc
+                    (lambda (k)
+                      (uv/call-with-loop
+                      (lambda (loop)
+                        (ssl/call-with-context "./fixtures/nginx/cert.pem" "./fixtures/nginx/key.pem" #f
+                          (lambda (ctx)
+                            (uv/tcp-listen loop "127.0.0.1:9191"
+                                            (lambda (status server client)
+                                              (uv/serve-https ctx client (lambda (status)
+                                                                          #f))))))))
+                      ))])
+
+        (info "resp is: ~a" resp))))
 
 (describe "http requests"
   (with-nginx

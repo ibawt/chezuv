@@ -670,22 +670,24 @@
   (define h2-error-inadequate-security 12)
   (define h2-error-http/1.1-required 13)
 
+
+  (define (make-frame type flags id payload)
+    (let* ([payload-len (if payload (bytevector-length payload) 0)]
+           [buf (make-bytevector (+ payload-len h2-frame-premamble-size))])
+      (bytevector-u8-set! buf 0 (logand (fxsra payload-len 16) 255))
+      (bytevector-u8-set! buf 1 (logand (fxsra payload-len 8) 255))
+      (bytevector-u8-set! buf 2 (logand payload-len 255))
+      (bytevector-u8-set! buf 3 type )
+      (bytevector-u8-set! buf 4 flags)
+      (bytevector-u32-set! buf 5 id 'big)
+      (when (positive? payload-len)
+        (bytevector-copy! payload 0 buf h2-frame-premamble-size payload-len))
+      buf))
+
   (define write-frame
     (lambda (writer type flags id payload)
       (lambda (k)
-        ;; TODO: all this copying is pretty terrible
-        ;; maybe should operate on the foreign buf directly
-        (let* ([payload-len (if payload (bytevector-length payload) 0)]
-               [buf (make-bytevector (+ payload-len h2-frame-premamble-size))])
-          (bytevector-u8-set! buf 0 (logand (fxsra payload-len 16) 255))
-          (bytevector-u8-set! buf 1 (logand (fxsra payload-len 8) 255))
-          (bytevector-u8-set! buf 2 (logand payload-len 255))
-          (bytevector-u8-set! buf 3 type )
-          (bytevector-u8-set! buf 4 flags)
-          (bytevector-u32-set! buf 5 id 'big)
-          (when (positive? payload-len)
-            (bytevector-copy! payload 0 buf h2-frame-premamble-size payload-len))
-          ((writer (bytevector->uv-buf buf)) k)))))
+        ((writer (bytevector->uv-buf (make-frame type flags id payload))) k))))
 
   (define-record-type h2-frame
     (fields type flags id payload))
@@ -768,25 +770,29 @@
   (define (write-h2-ack-settings writer)
     (write-frame writer h2-frame-type-settings h2-settings-ack 0 #f))
 
-  (define h2-header-flag-end-stream 1)
+  (define h2-header-flag-end-stream 0)
   (define h2-header-flag-end-headers 4)
   (define h2-header-flag-padded 8)
   (define h2-header-flag-priority 16)
 
   (define-record-type h2-header-frame
-    (fields exclusive? stream-dependency weight headers))
+    (fields pad-length exclusive? stream-dependency weight headers))
 
-  (define (read-h2-header-frame frame table)
+  (define (h2-header-flag? frame . values)
+    (let ([v (apply fxlogor values)])
+      (= v (fxlogand v (h2-frame-flags frame)))))
+
+  (define (read-h2-header-frame frame table . payloads)
     (let ([p (h2-frame-payload frame)]
           [pad-length #f]
           [e #f ]
           [stream-dep #f]
           [weight #f]
           [i  0])
-      (when (logbit? h2-header-flag-padded (h2-frame-flags frame))
+      (when (h2-header-flag? frame h2-header-flag-padded)
         (set! pad-length (bytevector-u8-ref p 0))
         (set! i 1))
-      (when (logbit? h2-header-flag-priority (h2-frame-flags frame))
+      (when (h2-header-flag? frame h2-header-flag-priority)
         (set! e (logbit? 32 (bytevector-u32-ref p i 'big)))
         (set! stream-dep (logand (bytevector-u32-ref p i 'big) #x7fffffff))
         (set! weight (bytevector-u8-ref p (+ i 4))))
@@ -797,31 +803,62 @@
         (info "decoded headers: ~a" h)
         h)))
 
+  (define (process-h2-request headers payload)
+    (info "process-h2-request: ~a ~a" headers payload)
+    (let ([resp-headers '((:status 200))])
+      (let ([encoded-headers (hpack/encode resp-headers)])
+        (info "payload = ~a" payload)
+        (make-frame h2-frame-type-headers
+                    (fxlogor h2-header-flag-end-headers h2-header-flag-end-stream)
+                    1
+                    encoded-headers))))
+
   (define serve-http2
     (lambda (reader writer on-done)
       (let/async ([settings (h2-default-settings)]
                   [_ (<- (h2-check-preface reader))] ;; check preface for http2
                   [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))]
-                  [header-table (hpack/make-dynamic-table 4096)]
-                  ) ;; send our settings)
-        (let lp ()
+                  [header-table (hpack/make-dynamic-table 4096)])
+        (let lp ([streams '()])
           (let/async ([frame (<- (read-frame reader))]
-                      [type (h2-frame-type frame)])
+                      [type (h2-frame-type frame)]
+                      [flags (h2-frame-flags frame)])
+            (info "flags: ~8,'0b" flags) 
             (cond
               ((= h2-frame-type-settings type) (begin
-                                                 (set! settings (merge-alist settings (read-settings-frame frame)))
-                                                 ((write-h2-ack-settings writer) (lambda (n) (lp)))))
+                                                 (if (h2-header-flag? frame h2-settings-ack)
+                                                     (lp streams)
+                                                     (begin
+                                                       (set! settings (merge-alist settings (read-settings-frame frame)))
+                                                       ((write-h2-ack-settings writer) (lambda (n) (lp streams)))))))
               ((= h2-frame-type-headers type) (begin
-                                                (info "headers")
-                                                (let ([header (read-h2-header-frame frame header-table)])
-                                                  (info "parsed a header lulz")
-                                                  (lp))))
+                                                (info "header type")
+                                                ;; TODO: assert for prev. used stream ids
+                                                (cond
+                                                 ((not (h2-header-flag? frame h2-header-flag-end-headers))
+                                                  (begin (info "in this place")
+                                                         ;; do something with continuation frames
+                                                         ;; add to streams -> waiting for complete headers
+                                                         (lp (cons (list (h2-frame-id frame) frame) streams))))
+                                                 ((h2-header-flag? frame h2-header-flag-end-headers h2-header-flag-end-stream)
+                                                  (begin (info "in here?")
+                                                         ;; end of headers and end of stream
+                                                         (let ([headers (read-h2-header-frame frame header-table)])
+                                                           ((writer (bytevector->uv-buf (process-h2-request headers #f)))
+                                                            (lambda (x)
+                                                              (lp streams))))))
+                                                 ((h2-header-flag? frame h2-header-flag-end-headers)
+                                                  (let ([headers (read-h2-header-frame frame header-table)])
+                                                    (info "headers: ~a" headers)
+                                                    (info "wat?")
+                                                    (lp (cons (list (h2-frame-id frame) frame) streams)))
+                                                  ))))
               ((= h2-frame-type-window-update type) (begin
                                                       (info "window update")
                                                       (let ([size (bytevector-u32-ref (h2-frame-payload frame) 0 'big)])
                                                         (info "flags: ~a, stream-id: ~a" (h2-frame-flags frame) (h2-frame-id frame))
                                                         (info "window-size: ~a" size)
-                                                        (lp))))
+                                                        (lp streams))))
               (else "idk: ~a" (h2-frame-type frame))))
           )
         )))
