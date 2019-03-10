@@ -3,10 +3,12 @@
           hpack/make-dynamic-table
           hpack/encode)
   (import (chezscheme)
+          (utils)
           (log))
 
   (define-record-type huffman-entry
     (fields char value bits))
+
 
   (define huffman-table
     (list->vector
@@ -371,29 +373,35 @@
          (e)))))
 
   (define (encode-huffman-string s)
-    (let ([w (bit-writer)])
+    (with-bit-writer w
       (string-for-each
        (lambda (c)
          (let ([entry (vector-ref huffman-table (char->integer c))])
-           (w (huffman-entry-value entry) (huffman-entry-bits entry)))) s)
-      (w)))
+           (w (huffman-entry-value entry) (huffman-entry-bits entry)))) s)))
 
   (define (encode-string-literal writer s)
-    (if (> (string-length s) 4)
-        (begin
-          (let ([bytes (encode-huffman-string s)])
-            (writer 1 1)
-            (encode-prefixed-integer writer 7 (bytevector-length bytes))
-            (let lp ([i 0])
-              (unless (>= i (bytevector-length bytes))
-                (writer (bytevector-u8-ref bytes i) 8)
-                (lp (+ 1 i))))))
-        (begin
-          (writer 0 1) ;; no huffman :(
-          (encode-prefixed-integer writer 7 (string-length s))
-          (string-for-each
-           (lambda (s)
-             (writer (char->integer s) 8)) s))))
+    (if (number? s)
+        (encode-string-literal writer (format #f "~a" s))
+        (if (> (string-length s) 4)
+            (begin
+              (let ([bytes (encode-huffman-string s)])
+                (writer 1 1)
+                (encode-prefixed-integer writer 7 (bytevector-length bytes))
+                (let lp ([i 0])
+                  (unless (>= i (bytevector-length bytes))
+                    (writer (bytevector-u8-ref bytes i) 8)
+                    (lp (+ 1 i))))))
+            (begin
+              (writer 0 1) ;; no huffman :(
+              (encode-prefixed-integer writer 7 (string-length s))
+              (string-for-each
+               (lambda (s)
+                 (writer (char->integer s) 8)) s)))))
+
+  (define (should-index? entry)
+    (case entry
+      ((authorization cookie set-cookie) #f)
+      (else #t)))
 
   (define (hpack/encode headers)
     (let ([writer (bit-writer)])
@@ -406,10 +414,16 @@
                         (begin
                           (writer 1 1) ; write to bit 7
                           (encode-prefixed-integer writer 7 static-entry))
-                        (begin
-                          (writer #b01 2)
-                          (encode-prefixed-integer writer 6 static-entry)
-                          (encode-string-literal writer (cadar h))))
+                        (if (should-index? entry)
+                            (begin
+                              (writer #b01 2)
+                              (encode-prefixed-integer writer 6 static-entry)
+                              (encode-string-literal writer (cadar h)))
+                            (begin
+                              (writer 1 4)
+                              (info "static-entry is: ~a" static-entry)
+                              (encode-prefixed-integer writer 4 static-entry)
+                              (encode-string-literal writer (cadar h)))))
                     (info "encode a static entry"))
                   (begin
                     (info "encode a dyn entry")))
@@ -429,26 +443,31 @@
   (define (encode-prefixed-integer writer prefix i)
     (if (< i (bitmask prefix))
         (writer i prefix)
-        (let lp ([i (- i  (bitmask prefix))])
-          (when (>= i 128)
-            (writer (+ 128 (mod i 128)) 8)
-            (lp (/ i 128))))))
+        (begin
+          (writer (bitmask prefix) prefix)
+          (let lp ([i (- i  (bitmask prefix))])
+           (if (>= i 128)
+               (begin
+                 (writer (+ 128 (mod i 128)) 8)
+                 (lp (fxdiv i 128)))
+               (writer i 8))))))
 
   (define (decode-prefixed-integer prefix reader initial)
     ;; TODO: add the limits in
     ;; and make this less set!'ey
-    (if (< initial (fxsll 1 prefix))
+    (if (< initial (bitmask prefix))
         initial
         (let ([m 0]
               [i initial]
-              [b (reader #f)])
+              [b #f])
           (let lp ()
+            (set! b (reader #f))
             (set! i (+ i (* (fxsll 1 m) (fxlogand b 127))))
             (set! m (+ m 7))
-            (set! b (reader #f))
             (if (= 128 (fxlogand b 128))
                 (lp)
-                i)))))
+                (begin
+                  i))))))
 
   (define (fold-range f n initial)
     (let lp ([i 0]
@@ -566,8 +585,15 @@
               (error 'header-ref "index not found" index)))))
 
   (define (hpack/decode bytes start header-table)
+    ;; (let* ([b (with-bit-writer w
+    ;;                          (w 0 3)
+    ;;                          (encode-prefixed-integer w 5 1337))]
+    ;;        [r (bytevector-reader b 0)])
+
+    ;;   (info "decoded is: ~a" (decode-prefixed-integer 5 r (r #f))))
     (let ([r (bytevector-reader bytes start)])
       (let lp ([headers '()])
+        (info "decode: ~a" headers)
         (let ([c (r #f)])
           (if c
               (cond
@@ -600,6 +626,18 @@
                              [h (header-ref header-table i)]
                              [v (decode-string-literal r)])
                         (lp (cons (list (if (pair? h) (car h) h) v) headers)))))]
+               [(= 1 (fxsra c 4))
+                (let ([index (logand c (bitmask 4))])
+                  (info "in here? index: ~a" index)
+                  (if (= 0 index)
+                      (let* ([h (decode-string-literal r)]
+                             [v (decode-string-literal r)])
+                        (lp (cons (list h v) headers)))
+                      (let* ([i (decode-prefixed-integer 4 r (logand c (bitmask 4)))]
+                             [h (header-ref header-table i)]
+                             [v (decode-string-literal r)])
+                        (lp (cons (list (if (pair? h) (car h) h) v) headers)))))
+                ]
                [(= #b001 (fxsra c 5))
                 (begin
                   (let ([n (decode-prefixed-integer 5 r (logand c (bitmask 5)))])

@@ -772,7 +772,7 @@
   (define h2-header-flag-end-stream 0)
   (define h2-header-flag-end-headers 4)
   (define h2-header-flag-padded 8)
-  (define h2-header-flag-priority 16)
+  (define h2-header-flag-priority 32)
 
   (define-record-type h2-header-frame
     (fields pad-length exclusive? stream-dependency weight headers))
@@ -792,21 +792,29 @@
         (set! pad-length (bytevector-u8-ref p 0))
         (set! i 1))
       (when (h2-header-flag? frame h2-header-flag-priority)
-        (set! e (logbit? 32 (bytevector-u32-ref p i 'big)))
+        (info "should be in here?")
+        (set! e (logbit? 31 (bytevector-u32-ref p i 'big)))
         (set! stream-dep (logand (bytevector-u32-ref p i 'big) #x7fffffff))
-        (set! weight (bytevector-u8-ref p (+ i 4))))
+        (set! weight (bytevector-u8-ref p (+ i 4)))
+        (set! i 6))
       (info "pad-length: ~a" pad-length)
       (info "flags: ~a" (h2-frame-flags frame))
       (info "payload is: ~a" p)
+      (info "e: ~a" e)
+      (info "stream-dep: ~a" stream-dep)
+      (info "weight: ~a" weight)
       (let ([h (hpack/decode p i table)])
         (info "decoded headers: ~a" h)
         h)))
 
   (define (process-h2-request headers payload)
     (info "process-h2-request: ~a ~a" headers payload)
-    (let ([resp-headers '((:status 200) (via "ChezScheme"))])
+    (let ([resp-headers '((content-length 0)(cookie "bl")(:status 200) (via "ChezScheme"))])
       (let ([encoded-headers (hpack/encode resp-headers)])
-        (info "encoded-headers: ~a" encoded-headers)
+        ;; (info "encoded-headers: ~a" encoded-headers)
+        ;; (info "decoded-headers: ~a" (hpack/decode encoded-headers 0 (hpack/make-dynamic-table 4096)))
+        ;; (bytevector-for-each (lambda (b i)
+        ;;                        (info "~8,'0b" b)) encoded-headers)
         (make-frame h2-frame-type-headers
                     (fxlogor h2-header-flag-end-headers h2-header-flag-end-stream)
                     1
@@ -822,14 +830,21 @@
           (let/async ([frame (<- (read-frame reader))]
                       [type (h2-frame-type frame)]
                       [flags (h2-frame-flags frame)])
-            (info "flags: ~8,'0b" flags) 
+            (info "flags: ~8,'0b" flags)
+            (info "type: ~a" type)
             (cond
               ((= h2-frame-type-settings type) (begin
                                                  (if (h2-header-flag? frame h2-settings-ack)
-                                                     (lp streams)
                                                      (begin
+                                                       (info "this was n ack")
+                                                       (lp streams))
+                                                     (begin
+                                                       (info "sending settings")
                                                        (set! settings (merge-alist settings (read-settings-frame frame)))
-                                                       ((write-h2-ack-settings writer) (lambda (n) (lp streams)))))))
+                                                       ((write-h2-ack-settings writer) (lambda (n)
+                                                                                         (info "in here")
+                                                                                         ))
+                                                       (lp streams)))))
               ((= h2-frame-type-headers type) (begin
                                                 (info "header type")
                                                 ;; TODO: assert for prev. used stream ids
@@ -847,10 +862,14 @@
                                                             (lambda (x)
                                                               (lp streams))))))
                                                  ((h2-header-flag? frame h2-header-flag-end-headers)
+                                                  (info "end headers")
                                                   (let ([headers (read-h2-header-frame frame header-table)])
                                                     (info "headers: ~a" headers)
                                                     (info "wat?")
-                                                    (lp (cons (list (h2-frame-id frame) frame) streams)))
+                                                    (lp (cons (list (h2-frame-id frame) frame) streams))))
+                                                 (else
+                                                  (begin (info "wat")
+                                                         (lp streams))
                                                   ))))
               ((= h2-frame-type-window-update type) (begin
                                                       (info "window update")
@@ -858,7 +877,9 @@
                                                         (info "flags: ~a, stream-id: ~a" (h2-frame-flags frame) (h2-frame-id frame))
                                                         (info "window-size: ~a" size)
                                                         (lp streams))))
-              (else "idk: ~a" (h2-frame-type frame))))
+              (else (begin
+                      (info "idk: ~a" (h2-frame-type frame))
+                      (lp streams)))))
           )
         )))
 
