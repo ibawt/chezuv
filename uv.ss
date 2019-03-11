@@ -769,7 +769,8 @@
   (define (write-h2-ack-settings writer)
     (write-frame writer h2-frame-type-settings h2-settings-ack 0 #f))
 
-  (define h2-header-flag-end-stream 0)
+  (define h2-ping-ack 1)
+  (define h2-header-flag-end-stream 1)
   (define h2-header-flag-end-headers 4)
   (define h2-header-flag-padded 8)
   (define h2-header-flag-priority 32)
@@ -792,11 +793,11 @@
         (set! pad-length (bytevector-u8-ref p 0))
         (set! i 1))
       (when (h2-header-flag? frame h2-header-flag-priority)
-        (info "should be in here?")
         (set! e (logbit? 31 (bytevector-u32-ref p i 'big)))
         (set! stream-dep (logand (bytevector-u32-ref p i 'big) #x7fffffff))
         (set! weight (bytevector-u8-ref p (+ i 4)))
-        (set! i 6))
+        (set! i (+ i 4 1)))
+      (info "HEADER FRAME")
       (info "pad-length: ~a" pad-length)
       (info "flags: ~a" (h2-frame-flags frame))
       (info "payload is: ~a" p)
@@ -809,7 +810,7 @@
 
   (define (process-h2-request headers payload)
     (info "process-h2-request: ~a ~a" headers payload)
-    (let ([resp-headers '((content-length 0)(cookie "bl")(:status 200) (via "ChezScheme"))])
+    (let ([resp-headers '((:status 200) (content-length 0)(cookie "bl") (via "ChezScheme"))])
       (let ([encoded-headers (hpack/encode resp-headers)])
         ;; (info "encoded-headers: ~a" encoded-headers)
         ;; (info "decoded-headers: ~a" (hpack/decode encoded-headers 0 (hpack/make-dynamic-table 4096)))
@@ -817,8 +818,35 @@
         ;;                        (info "~8,'0b" b)) encoded-headers)
         (make-frame h2-frame-type-headers
                     (fxlogor h2-header-flag-end-headers h2-header-flag-end-stream)
-                    1
+                    13
                     encoded-headers))))
+
+  (define-record-type h2-stream
+    (fields id (mutable state) (mutable priority) (mutable in-frames) (mutable out-frames)
+            in-header-table out-header-table (mutable window-size)))
+
+  (define-record-type h2-session
+    (fields (mutable settings) (mutable last-used-id) (mutable streams) reader writer (mutable goaway) (mutable window-size)))
+
+  (define (new-h2-session r w)
+    (make-h2-session (h2-default-settings) 0 '() r w #f (cadr (assoc 'h2-initial-window-size (h2-default-settings)))))
+
+  (define (h2-session-stream-add! session stream-id)
+    (if (>= (h2-session-last-used-id session) stream-id)
+        (error 'idk stream-id)
+        (let ([stream (make-h2-stream stream-id 'idle 0 '() '() (hpack/make-dynamic-table 4096) (hpack/make-dynamic-table 4096)
+                                      (h2-session-setting-value session 'h2-initial-window-size))])
+          (h2-session-streams-set! session (cons (list stream-id stream) (h2-session-streams session)))
+          session)))
+
+  (define (h2-session-setting-value session setting)
+    (cadr (assoc setting (h2-session-settings session))))
+
+  (define (h2-session-find-stream session id)
+    (let ([e (assoc id (h2-session-streams session))])
+      (if e
+          (cadr e)
+          #f)))
 
   (define serve-http2
     (lambda (reader writer on-done)
@@ -833,50 +861,57 @@
             (info "flags: ~8,'0b" flags)
             (info "type: ~a" type)
             (cond
-              ((= h2-frame-type-settings type) (begin
-                                                 (if (h2-header-flag? frame h2-settings-ack)
-                                                     (begin
-                                                       (info "this was n ack")
-                                                       (lp streams))
-                                                     (begin
-                                                       (info "sending settings")
-                                                       (set! settings (merge-alist settings (read-settings-frame frame)))
-                                                       ((write-h2-ack-settings writer) (lambda (n)
-                                                                                         (info "in here")
-                                                                                         ))
-                                                       (lp streams)))))
-              ((= h2-frame-type-headers type) (begin
-                                                (info "header type")
-                                                ;; TODO: assert for prev. used stream ids
-                                                (cond
-                                                 ((not (h2-header-flag? frame h2-header-flag-end-headers))
-                                                  (begin (info "in this place")
-                                                         ;; do something with continuation frames
-                                                         ;; add to streams -> waiting for complete headers
-                                                         (lp (cons (list (h2-frame-id frame) frame) streams))))
-                                                 ((h2-header-flag? frame h2-header-flag-end-headers h2-header-flag-end-stream)
-                                                  (begin (info "in here?")
-                                                         ;; end of headers and end of stream
-                                                         (let ([headers (read-h2-header-frame frame header-table)])
-                                                           ((writer (bytevector->uv-buf (process-h2-request headers #f)))
-                                                            (lambda (x)
-                                                              (lp streams))))))
-                                                 ((h2-header-flag? frame h2-header-flag-end-headers)
-                                                  (info "end headers")
-                                                  (let ([headers (read-h2-header-frame frame header-table)])
-                                                    (info "headers: ~a" headers)
-                                                    (info "wat?")
-                                                    (lp (cons (list (h2-frame-id frame) frame) streams))))
-                                                 (else
-                                                  (begin (info "wat")
-                                                         (lp streams))
-                                                  ))))
-              ((= h2-frame-type-window-update type) (begin
-                                                      (info "window update")
-                                                      (let ([size (bytevector-u32-ref (h2-frame-payload frame) 0 'big)])
-                                                        (info "flags: ~a, stream-id: ~a" (h2-frame-flags frame) (h2-frame-id frame))
-                                                        (info "window-size: ~a" size)
-                                                        (lp streams))))
+             ((= h2-frame-type-goaway type) (begin
+                                              (info "go away")
+                                              (on-done #t)))
+             ((= h2-frame-type-ping type)
+              (cond
+               ((not (= 0 (h2-frame-id frame))) (raise (make-h2-error h2-error-protocol-error "invalid stream id for ping")))
+               ((not (= 8 (bytevector-length (h2-frame-payload frame))))
+                (raise (make-h2-error h2-error-frame-size-error "invalid size for ping frame")))
+               (else
+                (begin
+                  ((writer (bytevector->uv-buf (make-frame h2-frame-type-ping h2-ping-ack 0 (h2-frame-payload frame)) ))
+                   (lambda (n)
+                     (info "wrote ping ack") #f))
+                  (lp streams)))))
+             ((= h2-frame-type-settings type) (begin
+                                                (if (h2-header-flag? frame h2-settings-ack)
+                                                    (begin
+                                                      (lp streams))
+                                                    (begin
+                                                      (set! settings (merge-alist settings (read-settings-frame frame)))
+                                                      ((write-h2-ack-settings writer) (lambda (n)
+                                                                                        #f
+                                                                                        ))
+                                                      (lp streams)))))
+             ((= h2-frame-type-headers type) (begin
+                                               ;; TODO: assert for prev. used stream ids
+                                               (cond
+                                                ((not (h2-header-flag? frame h2-header-flag-end-headers))
+                                                 (begin
+                                                   ;; do something with continuation frames
+                                                   ;; add to streams -> waiting for complete headers
+                                                   (lp (cons (list (h2-frame-id frame) frame) streams))))
+                                                ((h2-header-flag? frame h2-header-flag-end-headers h2-header-flag-end-stream)
+                                                 (begin
+                                                   ;; end of headers and end of stream
+                                                   (let ([headers (read-h2-header-frame frame header-table)])
+                                                     ((writer (bytevector->uv-buf (process-h2-request headers #f)))
+                                                      (lambda (x)
+                                                        (lp streams))))))
+                                                ((h2-header-flag? frame h2-header-flag-end-headers)
+                                                 (let ([headers (read-h2-header-frame frame header-table)])
+                                                   (lp (cons (list (h2-frame-id frame) frame) streams))))
+                                                (else
+                                                 (begin
+                                                   (lp streams))
+                                                 ))))
+             ((= h2-frame-type-window-update type) (begin
+                                                     (let ([size (bytevector-u32-ref (h2-frame-payload frame) 0 'big)])
+                                                       ;; (info "flags: ~a, stream-id: ~a" (h2-frame-flags frame) (h2-frame-id frame))
+                                                       ;; (info "window-size: ~a" size)
+                                                       (lp streams))))
               (else (begin
                       (info "idk: ~a" (h2-frame-type frame))
                       (lp streams)))))
@@ -962,4 +997,3 @@
                   [resp (<- (uv/read-http-response (cadr client)))]
                   [done (<- (tls-shutdown (car client) stream))])
                  (k resp)))))
-

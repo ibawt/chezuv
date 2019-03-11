@@ -412,6 +412,7 @@
                   (let ([entry (vector-ref static-table static-entry)])
                     (if (pair? entry)
                         (begin
+                          (info "writing static entry: ~a" entry)
                           (writer 1 1) ; write to bit 7
                           (encode-prefixed-integer writer 7 static-entry))
                         (if (should-index? entry)
@@ -585,12 +586,6 @@
               (error 'header-ref "index not found" index)))))
 
   (define (hpack/decode bytes start header-table)
-    ;; (let* ([b (with-bit-writer w
-    ;;                          (w 0 3)
-    ;;                          (encode-prefixed-integer w 5 1337))]
-    ;;        [r (bytevector-reader b 0)])
-
-    ;;   (info "decoded is: ~a" (decode-prefixed-integer 5 r (r #f))))
     (let ([r (bytevector-reader bytes start)])
       (let lp ([headers '()])
         (info "decode: ~a" headers)
