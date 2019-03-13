@@ -695,19 +695,25 @@
   (define read-frame
     (lambda (reader)
       (lambda (k)
+        (info "reading")
         (reader (make-bytevector h2-frame-premamble-size) 0 h2-frame-premamble-size
                 (lambda (bv num-read)
+                  (info "num-read: ~a" num-read)
+                  (info "preamble size: ~a" h2-frame-premamble-size)
                   (unless (= num-read h2-frame-premamble-size)
                     (error 'read-frame "not enough data"))
                   (let ([len (bytevector-u24-ref bv 0 'big)]
                         [type (bytevector-u8-ref bv 3)]
                         [flags (bytevector-u8-ref bv 4)]
                         [id (bytevector-u32-ref bv 5 'big)])
-                    (reader (make-bytevector len) 0 len
-                            (lambda (bv num-read)
-                              (unless (= num-read len)
-                                (error 'read-frame "error reading frame payload"))
-                              (k (make-h2-frame type flags id bv))))))))))
+                    (info "frame len: ~a" len)
+                    (if (zero? len)
+                        (k (make-h2-frame type flags id (make-bytevector 0)))
+                        (reader (make-bytevector len) 0 len
+                                (lambda (bv num-read)
+                                  (unless (= num-read len)
+                                    (error 'read-frame "error reading frame payload"))
+                                  (k (make-h2-frame type flags id bv)))))))))))
 
   (define (async-reader reader)
     (lambda (len)
@@ -928,7 +934,7 @@
     (info "serve-http2")
     (let/async ([_ (<- (h2-check-preface reader))] ;; check preface for http2
                 [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))])
-               (info "http2 connection established")
+      (info "http2 connection established")
       (let lp ()
         (let/async ([frame (<- (read-frame reader))]
                     [type (h2-frame-type frame)]
@@ -971,8 +977,7 @@
                   (h2-stream-assemble-headers! frame))
                 (when (h2-header-flag? frame 1)
                   (h2-stream-state-set! stream 'half-closed-remote)
-                  (process-h2-request stream)
-                ))))
+                  (process-h2-request stream)))))
            ((= h2-frame-type-data type)
             (begin
               (info "data")
@@ -992,9 +997,7 @@
            ((= h2-frame-type-headers type)
             (begin
               (info "headers")
-              (let* ([stream-a (h2-session-find-stream session (h2-frame-id frame))]
-                     [stream (if stream-a stream-a (h2-session-stream-add! session (h2-frame-id frame)))])
-                (info "stream: ~a" stream)
+              (let ([stream (else-map (h2-session-find-stream session (h2-frame-id frame)) (h2-session-stream-add! session (h2-frame-id frame)))])
                 (unless (h2-stream-state=? stream 'idle)
                   (raise (make-h2-error h2-error-protocol-error "invalid stream state for headers frame")))
                 (h2-stream-state-set! stream 'open)
@@ -1022,8 +1025,8 @@
                 ;; (info "window-size: ~a" size)
                 #f
                 )))
-              (else (info "didn't handle it: ~a" type))))
-        (lp))))
+           (else (info "didn't handle it: ~a" type)))
+          (lp)))))
 
   ;; (define serve-http2
   ;;   (lambda (reader writer on-done)
