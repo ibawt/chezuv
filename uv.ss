@@ -895,17 +895,30 @@
            (h2-session-streams-set! session (cons (list stream-id stream) (h2-session-streams session)))
            stream))))
 
+  (define-syntax if-let
+    (syntax-rules ()
+      ((_ ([a b] binds ... ) body ...)
+       (let ([a b])
+         (if a
+             (if-let (binds ...)
+                     body ...))))))
+
   (define (h2-session-setting-value session setting)
     (let ([e (assoc setting (h2-session-settings session))])
-      (if (pair? e)
+      (if e
           (cadr e)
           (error 'h2-session-settings "invalid setting" setting))))
 
+  (define-syntax assoc-value
+    (syntax-rules ()
+      ((_ key alist)
+       (let ([e (assoc key alist)])
+         (if e
+             (cadr e)
+             #f)))))
+
   (define (h2-session-find-stream session id)
-    (let ([e (assoc id (h2-session-streams session))])
-      (if e
-          (cadr e)
-          #f)))
+    (assoc-value id (h2-session-streams session)))
 
   (define-syntax else-map
     (syntax-rules ()
@@ -929,175 +942,146 @@
               #t)
              (else #f))))))
 
+  (define (h2-handler-goaway session frame)
+    (info "going away!")
+    #f)
+
+  (define (h2-handler-ping session frame)
+    (cond
+     ((not (= 0 (h2-frame-id frame))) (raise (make-h2-error h2-error-protocol-error "invalid stream id for ping")))
+     ((not (= 8 (bytevector-length (h2-frame-payload frame))))
+      (raise (make-h2-error h2-error-frame-size-error "invalid size for ping frame")))
+     (else
+      (begin
+        (((h2-session-writer session) (bytevector->uv-buf (make-frame h2-frame-type-ping h2-ping-ack 0 (h2-frame-payload frame))))
+         (lambda (n)
+           (info "wrote ping ack") #f))))))
+
+  (define (h2-handler-settings session frame)
+    (begin
+      (if (h2-header-flag? frame h2-settings-ack)
+          (begin
+            #f)
+          (begin
+            (h2-session-settings-set! session (merge-alist (h2-session-settings session) (read-settings-frame frame)))
+            ((write-h2-ack-settings (h2-session-writer session)) (lambda (n)
+                                              #f))))))
+
+  (define (h2-handler-continuation session frame)
+    (info "continuation")
+    (let ([stream (h2-session-find-stream session (h2-frame-id frame))])
+      (unless (h2-stream-valid-for-continuation? stream)
+        (raise (make-h2-error h2-error-protocol-error "last frame was not a valid frame for a continuation")))
+      (h2-stream-push-frame! stream frame)
+      (when (h2-header-flag? frame 4)
+        (h2-stream-assemble-headers! frame))
+      (when (h2-header-flag? frame 1)
+        (h2-stream-state-set! stream 'half-closed-remote)
+        (process-h2-request stream))))
+
+  (define (h2-handler-data session frame)
+    (begin
+      (info "data")
+      ;; TODO: padding verification
+      (let ([stream (h2-session-find-stream session (h2-frame-id frame))])
+        (cond
+         ((= 0 (h2-frame-id frame))
+          (raise (make-h2-error h2-error-protocol-error "stream id cannot be 0 for data frames")))
+         ((not stream) (make-h2-error h2-error-protocol-error "no stream found for provided stream id")))
+        (if (or (eq? 'open (h2-stream-state stream)) (eq? 'half-closed-local (h2-stream-state stream)))
+            (h2-stream-push-frame! stream frame)
+            (raise (make-h2-error h2-error-protocol-error "wrong stream state")))
+        (when (fxlogbit? 1 (h2-frame-flags frame))
+          ;; end-stream
+          (h2-stream-state-set! stream 'half-closed-remote)
+          (process-h2-request stream))))
+    )
+
+  (define (h2-handler-window-update session frame)
+    (begin
+      (info "window update")
+      (let ([size (bytevector-u32-ref (h2-frame-payload frame) 0 'big)])
+        ;; (info "flags: ~a, stream-id: ~a" (h2-frame-flags frame) (h2-frame-id frame))
+        ;; (info "window-size: ~a" size)
+        #f
+        ))
+    )
+
+  (define (h2-handler-headers session frame)
+    (begin
+      (info "headers")
+      (let ([stream (else-map (h2-session-find-stream session (h2-frame-id frame)) (h2-session-stream-add! session (h2-frame-id frame)))])
+        (unless (h2-stream-state=? stream 'idle)
+          (raise (make-h2-error h2-error-protocol-error "invalid stream state for headers frame")))
+        (h2-stream-state-set! stream 'open)
+        (cond
+         ((not (h2-header-flag? frame h2-header-flag-end-headers))
+          (begin
+            ;; should get continuations
+            (h2-stream-push-frame! stream frame)))
+         ((h2-header-flag? frame h2-header-flag-end-headers h2-header-flag-end-stream)
+          (begin
+            (h2-stream-state-set! stream 'half-closed-remote)
+            (let ([headers (read-h2-header-frame stream frame )])
+              (h2-stream-headers-set! stream headers)
+              (process-h2-request stream))))
+         ((h2-header-flag? frame h2-header-flag-end-headers)
+          (let ([headers (read-h2-header-frame stream frame )])
+            (h2-stream-headers-set! stream headers)))
+         (else
+          (error 'oopsie "shouldn't get here")))))
+    )
+
+  (define (h2-handler-priority session frame)
+    #t)
+
+
+  (define (h2-handler-rst-stream session frame)
+    #t)
+
+  (define (h2-handler-push-promise session frame)
+    #t)
+
+  (define h2-frame-type-handlers
+    (list->vector
+     (list h2-handler-data
+           h2-handler-headers
+           h2-handler-priority
+           h2-handler-rst-stream
+           h2-handler-settings
+           h2-handler-push-promise
+           h2-handler-ping
+           h2-handler-goaway
+           h2-handler-window-update
+           h2-handler-continuation)))
+
+  (define (h2-event-loop session)
+    (lambda (k)
+      (guard (e [(h2-error? e) (info "caught a http2 error, should probably do something!")])
+             (let lp ()
+               (let/async ([frame (<- (read-frame (h2-session-reader session)))]
+                           [type (h2-frame-type frame)]
+                           [flags (h2-frame-flags frame)])
+                  (info "read a frame: ~a" frame)
+                  (when (> type h2-frame-type-continuation)
+                    (raise (make-h2-error h2-error-protocol-error "invalid frame type")))
+                  (let ([h (vector-ref h2-frame-type-handlers type)])
+                    (info "found a handler: ~a" h)
+                    (unless h (error 'not-implemented "no handler for type" type))
+                    (let ([r (h session frame)])
+                      (info "handler returned: ~a" r)
+                      (lp))))))))
+
   (define (serve-http2 reader writer on-done)
     (define session (new-h2-session reader writer))
     (info "serve-http2")
-    (let/async ([_ (<- (h2-check-preface reader))] ;; check preface for http2
-                [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))])
-      (info "http2 connection established")
-      (let lp ()
-        (let/async ([frame (<- (read-frame reader))]
-                    [type (h2-frame-type frame)]
-                    [flags (h2-frame-flags frame)])
-          (info "flags: ~8,'0b" flags)
-          (info "type: ~a" type)
-          (cond
-           ((= h2-frame-type-goaway type) (begin
-                                            (info "go away")
-                                            (on-done #t)))
-           ((= h2-frame-type-ping type)
-            (info "ping")
-            (cond
-             ((not (= 0 (h2-frame-id frame))) (raise (make-h2-error h2-error-protocol-error "invalid stream id for ping")))
-             ((not (= 8 (bytevector-length (h2-frame-payload frame))))
-              (raise (make-h2-error h2-error-frame-size-error "invalid size for ping frame")))
-             (else
-              (begin
-                ((writer (bytevector->uv-buf (make-frame h2-frame-type-ping h2-ping-ack 0 (h2-frame-payload frame))))
-                 (lambda (n)
-                   (info "wrote ping ack") #f))))))
-           ((= h2-frame-type-settings type)
-            (info "settings")
-            (begin
-              (if (h2-header-flag? frame h2-settings-ack)
-                  (begin
-                    #f)
-                  (begin
-                    (h2-session-settings-set! session (merge-alist (h2-session-settings session) (read-settings-frame frame)))
-                    ((write-h2-ack-settings writer) (lambda (n)
-                                                      #f))))))
-           ((= h2-frame-type-continuation type)
-            (begin
-              (info "continuation")
-              (let ([stream (h2-session-find-stream session (h2-frame-id frame))])
-                (unless (h2-stream-valid-for-continuation? stream)
-                  (raise (make-h2-error h2-error-protocol-error "last frame was not a valid frame for a continuation")))
-                (h2-stream-push-frame! stream frame)
-                (when (h2-header-flag? frame 4)
-                  (h2-stream-assemble-headers! frame))
-                (when (h2-header-flag? frame 1)
-                  (h2-stream-state-set! stream 'half-closed-remote)
-                  (process-h2-request stream)))))
-           ((= h2-frame-type-data type)
-            (begin
-              (info "data")
-              ;; TODO: padding verification
-              (let ([stream (h2-session-find-stream session (h2-frame-id frame))])
-                (cond
-                 ((= 0 (h2-frame-id frame))
-                  (raise (make-h2-error h2-error-protocol-error "stream id cannot be 0 for data frames")))
-                 ((not stream) (make-h2-error h2-error-protocol-error "no stream found for provided stream id")))
-              (if (or (eq? 'open (h2-stream-state stream)) (eq? 'half-closed-local (h2-stream-state stream)))
-                  (h2-stream-push-frame! stream frame)
-                  (raise (make-h2-error h2-error-protocol-error "wrong stream state")))
-              (when (fxlogbit? 1 flags)
-                ;; end-stream
-                (h2-stream-state-set! stream 'half-closed-remote)
-                (process-h2-request stream)))))
-           ((= h2-frame-type-headers type)
-            (begin
-              (info "headers")
-              (let ([stream (else-map (h2-session-find-stream session (h2-frame-id frame)) (h2-session-stream-add! session (h2-frame-id frame)))])
-                (unless (h2-stream-state=? stream 'idle)
-                  (raise (make-h2-error h2-error-protocol-error "invalid stream state for headers frame")))
-                (h2-stream-state-set! stream 'open)
-               (cond
-                ((not (h2-header-flag? frame h2-header-flag-end-headers))
-                 (begin
-                   ;; should get continuations
-                   (h2-stream-push-frame! stream frame)))
-                ((h2-header-flag? frame h2-header-flag-end-headers h2-header-flag-end-stream)
-                 (begin
-                   (h2-stream-state-set! stream 'half-closed-remote)
-                   (let ([headers (read-h2-header-frame stream frame )])
-                     (h2-stream-headers-set! stream headers)
-                     (process-h2-request stream))))
-                ((h2-header-flag? frame h2-header-flag-end-headers)
-                 (let ([headers (read-h2-header-frame stream frame )])
-                   (h2-stream-headers-set! stream headers)))
-                (else
-                 (error 'oopsie "shouldn't get here"))))))
-           ((= h2-frame-type-window-update type)
-            (begin
-              (info "window update")
-              (let ([size (bytevector-u32-ref (h2-frame-payload frame) 0 'big)])
-                ;; (info "flags: ~a, stream-id: ~a" (h2-frame-flags frame) (h2-frame-id frame))
-                ;; (info "window-size: ~a" size)
-                #f
-                )))
-           (else (info "didn't handle it: ~a" type)))
-          (lp)))))
-
-  ;; (define serve-http2
-  ;;   (lambda (reader writer on-done)
-  ;;     (let/async ([settings (h2-default-settings)]
-  ;;                 [_ (<- (h2-check-preface reader))] ;; check preface for http2
-  ;;                 [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))]
-  ;;                 [header-table (hpack/make-dynamic-table 4096)])
-  ;;       (let lp ([streams '()])
-  ;;         (let/async ([frame (<- (read-frame reader))]
-  ;;                     [type (h2-frame-type frame)]
-  ;;                     [flags (h2-frame-flags frame)])
-  ;;           (info "flags: ~8,'0b" flags)
-  ;;           (info "type: ~a" type)
-  ;;           (cond
-  ;;            ((= h2-frame-type-goaway type) (begin
-  ;;                                             (info "go away")
-  ;;                                             (on-done #t)))
-  ;;            ((= h2-frame-type-ping type)
-  ;;             (cond
-  ;;              ((not (= 0 (h2-frame-id frame))) (raise (make-h2-error h2-error-protocol-error "invalid stream id for ping")))
-  ;;              ((not (= 8 (bytevector-length (h2-frame-payload frame))))
-  ;;               (raise (make-h2-error h2-error-frame-size-error "invalid size for ping frame")))
-  ;;              (else
-  ;;               (begin
-  ;;                 ((writer (bytevector->uv-buf (make-frame h2-frame-type-ping h2-ping-ack 0 (h2-frame-payload frame)) ))
-  ;;                  (lambda (n)
-  ;;                    (info "wrote ping ack") #f))
-  ;;                 (lp streams)))))
-  ;;            ((= h2-frame-type-settings type) (begin
-  ;;                                               (if (h2-header-flag? frame h2-settings-ack)
-  ;;                                                   (begin
-  ;;                                                     (lp streams))
-  ;;                                                   (begin
-  ;;                                                     (set! settings (merge-alist settings (read-settings-frame frame)))
-  ;;                                                     ((write-h2-ack-settings writer) (lambda (n)
-  ;;                                                                                       #f
-  ;;                                                                                       ))
-  ;;                                                     (lp streams)))))
-  ;;            ((= h2-frame-type-headers type) (begin
-  ;;                                              ;; TODO: assert for prev. used stream ids
-  ;;                                              (cond
-  ;;                                               ((not (h2-header-flag? frame h2-header-flag-end-headers))
-  ;;                                                (begin
-  ;;                                                  ;; do something with continuation frames
-  ;;                                                  ;; add to streams -> waiting for complete headers
-  ;;                                                  (lp (cons (list (h2-frame-id frame) frame) streams))))
-  ;;                                               ((h2-header-flag? frame h2-header-flag-end-headers h2-header-flag-end-stream)
-  ;;                                                (begin
-  ;;                                                  ;; end of headers and end of stream
-  ;;                                                  (let ([headers (read-h2-header-frame frame -table)])
-  ;;                                                    ((writer (bytevector->uv-buf (process-h2-request headers #f)))
-  ;;                                                     (lambda (x)
-  ;;                                                       (lp streams))))))
-  ;;                                               ((h2-header-flag? frame h2-header-flag-end-headers)
-  ;;                                                (let ([headers (read-h2-header-frame frame header-table)])
-  ;;                                                  (lp (cons (list (h2-frame-id frame) frame) streams))))
-  ;;                                               (else
-  ;;                                                (begin
-  ;;                                                  (lp streams))
-  ;;                                                ))))
-  ;;            ((= h2-frame-type-window-update type) (begin
-  ;;                                                    (let ([size (bytevector-u32-ref (h2-frame-payload frame) 0 'big)])
-  ;;                                                      ;; (info "flags: ~a, stream-id: ~a" (h2-frame-flags frame) (h2-frame-id frame))
-  ;;                                                      ;; (info "window-size: ~a" size)
-  ;;                                                      (lp streams))))
-  ;;             (else (begin
-  ;;                     (info "idk: ~a" (h2-frame-type frame))
-  ;;                     (lp streams)))))
-  ;;         )
-  ;;       )))
-
+    (guard (x [else (begin
+                      (info "caught exception, aborting connection")
+                      (on-done #f))])
+     (let/async ([_ (<- (h2-check-preface reader))] ;; check preface for http2
+                 [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))])
+                (info "h2 session established")
+                ((h2-event-loop session) on-done))))
 
   (define (uv/serve-https ctx stream on-done)
     ((tls-accept ctx stream)
