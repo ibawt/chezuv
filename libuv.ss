@@ -79,7 +79,7 @@
 
   (define init
     (case (machine-type)
-      ((ta6le) (load-shared-object "libuv.so.1"))))
+      ((ta6le a6le) (load-shared-object "libuv.so.1"))))
 
   (define-ftype uv-buf
     (struct
@@ -349,7 +349,8 @@
                       (lambda (h)
                         (cb h)
                         (foreign-free h)
-                        (unlock-object code))
+                        (unlock-object code)
+                        )
                       (void*)
                       void)])
 

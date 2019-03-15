@@ -246,7 +246,8 @@
                                (begin
                                  (uv-freeaddrinfo addr)
                                  (error 'getaddrinfo "invalid status" status)))
-                           (uv-freeaddrinfo addr))
+                          ; (uv-freeaddrinfo addr)
+                           )
                          (void* int (* addrinfo))
                          void)])
            (lock-object code)
@@ -307,10 +308,12 @@
          (check (uv-write write-req stream buf 1 (foreign-callable-entry-point code))))))
 
   (define (uv/stream-read-raw stream cb)
-    (letrec ([code (foreign-callable
+    (letrec ([ex (current-exception-state)]
+             [code (foreign-callable
                     (lambda (s nb buf)
                       (unlock-object code)
                       (check (uv-read-stop stream))
+                      (current-exception-state ex)
                       (if (negative? nb)
                           (begin
                             (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
@@ -337,6 +340,7 @@
                   (void* ssize_t (* uv-buf))
                   void)])
       (lock-object code)
+      (info "is this called??")
       (check (uv-read-start stream alloc-buffer (foreign-callable-entry-point code)))))
 
   (define (uv/make-reader stream reader)
@@ -526,10 +530,12 @@
 
   (define (ssl-drain client stream k)
     (if (positive? (ssl/num-bytes client))
-        (let ([buf (ssl-output-buffer client)])
+        (let ([buf (ssl-output-buffer client)]
+              [ex (current-exception-state)])
           ((uv/stream-write stream buf)
            (lambda (n)
              (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
+             (current-exception-state ex)
              (k))))
         (k)))
 
@@ -572,6 +578,7 @@
                          (lambda (n)
                            (let ([bv (make-bytevector n)])
                              (memcpy bv buf n)
+                             (info "tls-reader: ~a bytes" n)
                              (free-buf buf)
                              (on-read stream bv))))))))
 
@@ -695,18 +702,14 @@
   (define read-frame
     (lambda (reader)
       (lambda (k)
-        (info "reading")
         (reader (make-bytevector h2-frame-premamble-size) 0 h2-frame-premamble-size
                 (lambda (bv num-read)
-                  (info "num-read: ~a" num-read)
-                  (info "preamble size: ~a" h2-frame-premamble-size)
                   (unless (= num-read h2-frame-premamble-size)
                     (error 'read-frame "not enough data"))
                   (let ([len (bytevector-u24-ref bv 0 'big)]
                         [type (bytevector-u8-ref bv 3)]
                         [flags (bytevector-u8-ref bv 4)]
                         [id (bytevector-u32-ref bv 5 'big)])
-                    (info "frame len: ~a" len)
                     (if (zero? len)
                         (k (make-h2-frame type flags id (make-bytevector 0)))
                         (reader (make-bytevector len) 0 len
@@ -721,14 +724,13 @@
         (reader (make-bytevector len) 0 len
                 (lambda (bv num-read)
                   (k bv num-read))))))
-
   (define (h2-check-preface reader)
     (lambda (k)
       (reader (make-bytevector (string-length h2-preface)) 0 (string-length h2-preface)
               (lambda (bv num-read)
-                (if (and (= num-read (string-length h2-preface)) (string=? (utf8->string bv)))
+                (if (and (= num-read (string-length h2-preface)) (string=? (utf8->string bv) h2-preface))
                     (k #t)
-                    (error 'check-preface "invalid preface string" bv))))))
+                    (error 'h2-check-preface "invalid preface" bv))))))
 
   (define (h2-default-settings)
     '((h2-settings-table-size 4096)
@@ -767,7 +769,9 @@
 
   (define (merge-alist old new)
     (fold-left
-     (lambda (acc item)
+     (lambda (
+
+acc item)
        (let ([other (assq (car item) new)])
          (if other
              (cons (list (car item) (cadr other)) acc)
@@ -947,25 +951,30 @@
     #f)
 
   (define (h2-handler-ping session frame)
+    (info "ping handler")
     (cond
      ((not (= 0 (h2-frame-id frame))) (raise (make-h2-error h2-error-protocol-error "invalid stream id for ping")))
      ((not (= 8 (bytevector-length (h2-frame-payload frame))))
       (raise (make-h2-error h2-error-frame-size-error "invalid size for ping frame")))
      (else
       (begin
+        (info "ping handler")
         (((h2-session-writer session) (bytevector->uv-buf (make-frame h2-frame-type-ping h2-ping-ack 0 (h2-frame-payload frame))))
          (lambda (n)
-           (info "wrote ping ack") #f))))))
+           (info "wrote ping ack") #f)))))
+    #t)
 
   (define (h2-handler-settings session frame)
     (begin
       (if (h2-header-flag? frame h2-settings-ack)
           (begin
-            #f)
+            (info "remote acked settings")
+            #t)
           (begin
             (h2-session-settings-set! session (merge-alist (h2-session-settings session) (read-settings-frame frame)))
             ((write-h2-ack-settings (h2-session-writer session)) (lambda (n)
-                                              #f))))))
+                                                                   #t))))
+      #t))
 
   (define (h2-handler-continuation session frame)
     (info "continuation")
@@ -1003,7 +1012,7 @@
       (let ([size (bytevector-u32-ref (h2-frame-payload frame) 0 'big)])
         ;; (info "flags: ~a, stream-id: ~a" (h2-frame-flags frame) (h2-frame-id frame))
         ;; (info "window-size: ~a" size)
-        #f
+        #t
         ))
     )
 
@@ -1029,8 +1038,7 @@
           (let ([headers (read-h2-header-frame stream frame )])
             (h2-stream-headers-set! stream headers)))
          (else
-          (error 'oopsie "shouldn't get here")))))
-    )
+          (error 'oopsie "shouldn't get here"))))))
 
   (define (h2-handler-priority session frame)
     #t)
@@ -1057,7 +1065,10 @@
 
   (define (h2-event-loop session)
     (lambda (k)
-      (guard (e [(h2-error? e) (info "caught a http2 error, should probably do something!")])
+      (guard (e [(h2-error? e)
+                 (begin
+                   (info "caught a http2 error, should probably do something!: [~a] ~a" (h2-error-code e) (h2-error-message e))
+                   (k #f))])
              (let lp ()
                (let/async ([frame (<- (read-frame (h2-session-reader session)))]
                            [type (h2-frame-type frame)]
@@ -1066,22 +1077,18 @@
                   (when (> type h2-frame-type-continuation)
                     (raise (make-h2-error h2-error-protocol-error "invalid frame type")))
                   (let ([h (vector-ref h2-frame-type-handlers type)])
-                    (info "found a handler: ~a" h)
                     (unless h (error 'not-implemented "no handler for type" type))
                     (let ([r (h session frame)])
-                      (info "handler returned: ~a" r)
                       (lp))))))))
 
   (define (serve-http2 reader writer on-done)
     (define session (new-h2-session reader writer))
-    (info "serve-http2")
-    (guard (x [else (begin
-                      (info "caught exception, aborting connection")
-                      (on-done #f))])
-     (let/async ([_ (<- (h2-check-preface reader))] ;; check preface for http2
-                 [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))])
-                (info "h2 session established")
-                ((h2-event-loop session) on-done))))
+    (guard (e [(error? e) (info "error in serving-http2: ~a" e)(on-done #f)])
+              ;; [(condition? e) (info "it's a condition") (display-condition e)])
+           (let/async ([_ (<- (h2-check-preface reader))] ;; check preface for http2
+                       [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))])
+                      (info "h2 session established")
+                      ((h2-event-loop session) on-done))))
 
   (define (uv/serve-https ctx stream on-done)
     ((tls-accept ctx stream)

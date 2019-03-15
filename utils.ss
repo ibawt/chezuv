@@ -18,7 +18,7 @@
 
   (define init
     (case (machine-type)
-      ((ta6le)
+      ((ta6le a6le)
        (begin
          (load-shared-object "libc.so.6")))))
 

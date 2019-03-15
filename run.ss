@@ -35,7 +35,10 @@
                                      (uv/tcp-listen loop "127.0.0.1:8181"
                                                     (lambda (status server client)
                                                       (uv/serve-https ctx client
-                                                                      (lambda (done)
-                                                                        (format #t "done: ~a\n" done)))))
-                                     ))))))))
+                                                                      (lambda (d)
+                                                                        (format #t "done: ~a\n" done)
+                                                                        (format #t "closing client: ~a\n" client)
+                                                                        (format #t "server: ~a\n" server)
+                                                                        (uv/close-stream client)
+                                                                        (done)))))))))))))
 (run)
