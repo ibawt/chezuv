@@ -36,9 +36,10 @@
                                                     (lambda (status server client)
                                                       (uv/serve-https ctx client
                                                                       (lambda (d)
-                                                                        (format #t "done: ~a\n" done)
+                                                                        (format #t "d: ~a\n" d)
                                                                         (format #t "closing client: ~a\n" client)
                                                                         (format #t "server: ~a\n" server)
                                                                         (uv/close-stream client)
-                                                                        (done)))))))))))))
+                                                                        ;; (done)
+                                                                        ))))))))))))
 (run)

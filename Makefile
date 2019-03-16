@@ -1,7 +1,7 @@
 SCHEME := scheme -q
 SCHEME_LIB_DIRS := vendor:.
 
-RUN_SCHEME := $(SCHEME) --libdirs $(SCHEME_LIB_DIRS) --debug-on-exception --optimize-level 0 --program
+RUN_SCHEME := $(SCHEME) --libdirs $(SCHEME_LIB_DIRS) --debug-on-exception --program
 
 .PHONY: test docker_image clean
 

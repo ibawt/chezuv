@@ -56,6 +56,26 @@
          (let/async (next ...)
                     body ...)))))
 
+  (define-syntax let/async2
+    (syntax-rules (<-)
+      ((_ handler () body ...)
+       (guard (e ([else (handler e)]))
+        (let () body ...)))
+
+      ((_ handler ((name (<- value)) next ...) body ...)
+       (value (lambda (err name)
+                (if err
+                    (handler err)
+                    (let/async handler (next ...)
+                               body ...)))))
+
+
+      ((_ handler ((name value) next ...) body ...)
+       (guard (e [else (handler e)])
+              (let ((name value))
+                (let/async handler (next ...)
+                           body ...))))))
+
   (define-record-type http-request
     (fields headers body method url))
 
@@ -236,18 +256,19 @@
        (lambda (k)
          (letrec ([hint (make-ftype-pointer addrinfo (alloc-zero (ftype-sizeof addrinfo)))]
                   [req (make-req UV_GETADDRINFO)]
+                  [ex (current-exception-state)]
                   [code (foreign-callable
                          (lambda (req status addr)
                            (foreign-free req)
                            (foreign-free (ftype-pointer-address hint))
                            (unlock-object code)
+                           (current-exception-state ex)
                            (if (= 0 status)
                                (k addr)
                                (begin
                                  (uv-freeaddrinfo addr)
                                  (error 'getaddrinfo "invalid status" status)))
-                          ; (uv-freeaddrinfo addr)
-                           )
+                           (uv-freeaddrinfo addr))
                          (void* int (* addrinfo))
                          void)])
            (lock-object code)
@@ -259,10 +280,12 @@
   (define (uv/tcp-connect loop addr)
     (lambda (k)
       (letrec* ([conn (make-handler UV_STREAM)]
+                [ex (current-exception-state)]
                 [socket (make-handler UV_TCP)]
                 [code (foreign-callable
                        (lambda (conn status)
                          (unlock-object code)
+                         (current-exception-state ex)
                          (if (= 0 status)
                              (k socket)
                              (error 'tcp-connect "error in connect" status (uv-err-name status))))
@@ -277,7 +300,9 @@
   (define (uv/make-idle loop)
     (lambda (k)
       (letrec* ([idle (make-handler UV_IDLE)]
+                [ex (current-exception-state)]
                 [code (foreign-callable (lambda (ll)
+                                          (current-exception-state ex)
                                           (if (k)
                                               #t
                                               (begin
@@ -294,11 +319,13 @@
      (lambda (k)
        (letrec ([buf (if (string? s) (string->buf s) s)]
                 [write-req (make-req UV_WRITE)]
+                [ex (current-exception-state)]
                 [code (foreign-callable
                        (lambda (req status)
                          (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
                          (foreign-free write-req)
                          (unlock-object code)
+                         (current-exception-state ex)
                          (if (= 0 status)
                              (k status)
                              (error 'stream-write "uv/stream-write" status (uv-err-name status))))
@@ -325,10 +352,12 @@
       (check (uv-read-start stream alloc-buffer (foreign-callable-entry-point code)))))
 
   (define (uv/stream-read stream cb)
-    (letrec ([code (foreign-callable
+    (letrec ([ex (current-exception-state)]
+             [code (foreign-callable
                     (lambda (s nb buf)
                       (check (uv-read-stop stream))
                       (unlock-object code)
+                      (current-exception-state ex)
                       (if (negative? nb)
                           (begin
                             (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
@@ -488,8 +517,10 @@
   (define (uv/tcp-listen loop addr on-conn)
     (letrec ([s-addr (uv/ipv4->sockaddr addr)]
              [h (make-handler UV_TCP)]
+             [ex (current-exception-state)]
              [code (foreign-callable
                     (lambda (server status)
+                      (current-exception-state ex)
                       (if (= 0 status)
                         (let ([client (make-handler UV_TCP)])
                           (check (uv-tcp-init loop client))
@@ -531,11 +562,12 @@
   (define (ssl-drain client stream k)
     (if (positive? (ssl/num-bytes client))
         (let ([buf (ssl-output-buffer client)]
-              [ex (current-exception-state)])
+              ;; [ex (current-exception-state)]
+              )
           ((uv/stream-write stream buf)
            (lambda (n)
              (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
-             (current-exception-state ex)
+             ;; (current-exception-state ex)
              (k))))
         (k)))
 
@@ -1083,8 +1115,7 @@ acc item)
 
   (define (serve-http2 reader writer on-done)
     (define session (new-h2-session reader writer))
-    (guard (e [(error? e) (info "error in serving-http2: ~a" e)(on-done #f)])
-              ;; [(condition? e) (info "it's a condition") (display-condition e)])
+    (guard (e [(error? e) (info "error in serving-http2: ~a" e) (on-done #f)])
            (let/async ([_ (<- (h2-check-preface reader))] ;; check preface for http2
                        [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))])
                       (info "h2 session established")
