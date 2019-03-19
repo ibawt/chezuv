@@ -1,6 +1,7 @@
 ;; -*- geiser-scheme-implementation: chez -*-
 (import (chezscheme)
         (openssl)
+        (log)
         (uv))
 
 (define (run-with-cost)
@@ -32,14 +33,15 @@
        (lambda (loop)
          (ssl/call-with-context "fixtures/nginx/cert.pem"  "fixtures/nginx/key.pem" #f
                                    (lambda (ctx)
-                                     (uv/tcp-listen loop "127.0.0.1:8181"
-                                                    (lambda (status server client)
-                                                      (uv/serve-https ctx client
-                                                                      (lambda (d)
-                                                                        (format #t "d: ~a\n" d)
-                                                                        (format #t "closing client: ~a\n" client)
-                                                                        (format #t "server: ~a\n" server)
-                                                                        (uv/close-stream client)
-                                                                        ;; (done)
-                                                                        ))))))))))))
+                                     (guard (e [else (info "i caught it wow: ~a" e)])
+                                      (uv/tcp-listen loop "127.0.0.1:8181"
+                                                     (lambda (status server client)
+                                                       (uv/serve-https ctx client
+                                                                       (lambda (d)
+                                                                         (format #t "d: ~a\n" d)
+                                                                         (format #t "closing client: ~a\n" client)
+                                                                         (format #t "server: ~a\n" server)
+                                                                         (uv/close-stream client)
+                                                                         ;; (done)
+                                                                         )))))))))))))
 (run)

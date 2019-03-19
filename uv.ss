@@ -34,6 +34,20 @@
           (alloc)
           (irregex))
 
+  (define callbacks '())
+
+  (define (add-to-callbacks f)
+    (set! callbacks (cons f callbacks)))
+
+  (define (call x)
+    (x))
+
+  (define (pump-callbacks)
+    (let [(ex (current-exception-state))]
+      (for-each call callbacks)
+      (set! callbacks '())
+      (current-exception-state ex)))
+
   (define <- #f) ;; dummy else it won't compile in the importing module
   (define-syntax let/async
     (syntax-rules (<-)
@@ -55,26 +69,6 @@
        (let ((name value))
          (let/async (next ...)
                     body ...)))))
-
-  (define-syntax let/async2
-    (syntax-rules (<-)
-      ((_ handler () body ...)
-       (guard (e ([else (handler e)]))
-        (let () body ...)))
-
-      ((_ handler ((name (<- value)) next ...) body ...)
-       (value (lambda (err name)
-                (if err
-                    (handler err)
-                    (let/async handler (next ...)
-                               body ...)))))
-
-
-      ((_ handler ((name value) next ...) body ...)
-       (guard (e [else (handler e)])
-              (let ((name value))
-                (let/async handler (next ...)
-                           body ...))))))
 
   (define-record-type http-request
     (fields headers body method url))
@@ -161,13 +155,11 @@
        (lock-object alloc)
        alloc)))
 
-  (define make-req
-    (lambda (t)
-      (alloc-zero (uv-req-size t))))
+  (define (make-req t)
+    (alloc-zero (uv-req-size t)))
 
   (define (make-handler t)
-    (let ([mem (foreign-alloc (uv-handle-size t))])
-      mem))
+    (alloc-zero (uv-handle-size t)))
 
   (define (string->buf s)
     (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
@@ -208,12 +200,10 @@
    (let ([lines '()])
      (uv/read-lines reader
                  (lambda (line)
-                   ;; (info "read-headers line callback: ~a" (if line (utf8->string line) #f))
                    (if (or (not line) (= 0 (bytevector-length line)))
                        (begin
                          (if line
-                             (begin
-                               (done (reverse lines))))
+                             (done (reverse lines)))
                          #f)
                        (begin
                          (set! lines (cons line lines))
@@ -248,7 +238,10 @@
         (set! l (uvloop-create))
         (register-signal-handlers l)
         (f l)
-        (uv-run l 0)
+        (let lp ((r (uv-run l 1)))
+          (pump-callbacks)
+          (when (positive? r)
+              (lp (uv-run l 1))))
         (uv-stop l))))
 
   (define uv/getaddrinfo
@@ -262,13 +255,12 @@
                            (foreign-free req)
                            (foreign-free (ftype-pointer-address hint))
                            (unlock-object code)
-                           (current-exception-state ex)
-                           (if (= 0 status)
-                               (k addr)
-                               (begin
-                                 (uv-freeaddrinfo addr)
-                                 (error 'getaddrinfo "invalid status" status)))
-                           (uv-freeaddrinfo addr))
+                           (add-to-callbacks (lambda ()
+                                               (current-exception-state ex)
+                                               (if (= 0 status)
+                                                   (k addr)
+                                                   (error 'getaddrinfo "invalid status" status))
+                                               (uv-freeaddrinfo addr))))
                          (void* int (* addrinfo))
                          void)])
            (lock-object code)
@@ -285,10 +277,11 @@
                 [code (foreign-callable
                        (lambda (conn status)
                          (unlock-object code)
-                         (current-exception-state ex)
-                         (if (= 0 status)
-                             (k socket)
-                             (error 'tcp-connect "error in connect" status (uv-err-name status))))
+                         (add-to-callbacks (lambda ()
+                                             (current-exception-state ex)
+                                             (if (= 0 status)
+                                                 (k socket)
+                                                 (error 'tcp-connect "error in connect" status (uv-err-name status))))))
                        (void* int)
                        void)])
         (lock-object code)
@@ -302,13 +295,15 @@
       (letrec* ([idle (make-handler UV_IDLE)]
                 [ex (current-exception-state)]
                 [code (foreign-callable (lambda (ll)
-                                          (current-exception-state ex)
-                                          (if (k)
-                                              #t
-                                              (begin
-                                                (unlock-object code)
-                                                (uv-idle-stop idle)
-                                                (foreign-free idle))))
+                                          (add-to-callbacks
+                                           (lambda ()
+                                             (current-exception-state ex)
+                                             (if (k)
+                                                 #t
+                                                 (begin
+                                                   (unlock-object code)
+                                                   (uv-idle-stop idle)
+                                                   (foreign-free idle))))))
                                         (void*)
                                         void)])
         (check (uv-idle-init loop idle))
@@ -325,10 +320,11 @@
                          (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
                          (foreign-free write-req)
                          (unlock-object code)
-                         (current-exception-state ex)
-                         (if (= 0 status)
-                             (k status)
-                             (error 'stream-write "uv/stream-write" status (uv-err-name status))))
+                         (add-to-callbacks (lambda ()
+                                             (current-exception-state ex)
+                                             (if (= 0 status)
+                                                 (k status)
+                                                 (error 'stream-write "uv/stream-write" status (uv-err-name status))))))
                        (void* int)
                        void)])
          (lock-object code)
@@ -340,37 +336,26 @@
                     (lambda (s nb buf)
                       (unlock-object code)
                       (check (uv-read-stop stream))
-                      (current-exception-state ex)
-                      (if (negative? nb)
-                          (begin
-                            (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                            (cb #f #f))
-                          (cb nb buf)))
+                      (add-to-callbacks (lambda ()
+                                          (current-exception-state ex)
+                                          (if (negative? nb)
+                                              (begin
+                                                (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                                                (cb #f #f))
+                                              (cb nb buf)))))
                     (void* ssize_t (* uv-buf))
                     void)])
       (lock-object code)
       (check (uv-read-start stream alloc-buffer (foreign-callable-entry-point code)))))
 
   (define (uv/stream-read stream cb)
-    (letrec ([ex (current-exception-state)]
-             [code (foreign-callable
-                    (lambda (s nb buf)
-                      (check (uv-read-stop stream))
-                      (unlock-object code)
-                      (current-exception-state ex)
-                      (if (negative? nb)
-                          (begin
-                            (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                            (cb #f #f))
-                          (let ([p (make-bytevector nb)])
-                            (memcpy p (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)
-                            (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                            (cb stream p))))
-                  (void* ssize_t (* uv-buf))
-                  void)])
-      (lock-object code)
-      (info "is this called??")
-      (check (uv-read-start stream alloc-buffer (foreign-callable-entry-point code)))))
+    (uv/stream-read-raw stream (lambda (nb buf)
+                                 (if (and nb buf)
+                                     (let ([p (make-bytevector nb)])
+                                       (memcpy p (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)
+                                       (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                                       (cb stream p))
+                                     (cb #f #f)))))
 
   (define (uv/make-reader stream reader)
     (define buf #f)
@@ -520,14 +505,14 @@
              [ex (current-exception-state)]
              [code (foreign-callable
                     (lambda (server status)
-                      (current-exception-state ex)
-                      (if (= 0 status)
-                        (let ([client (make-handler UV_TCP)])
-                          (check (uv-tcp-init loop client))
-                          (check (uv-accept server client))
-                          (on-conn #f server client))
-                        (begin
-                          (on-conn status server #f))))
+                      (add-to-callbacks (lambda ()
+                                          (current-exception-state ex)
+                                          (if (= 0 status)
+                                              (let ([client (make-handler UV_TCP)])
+                                                (check (uv-tcp-init loop client))
+                                                (check (uv-accept server client))
+                                                (on-conn #f server client))
+                                              (on-conn status server #f)))))
                     (void* int)
                     void)])
       (lock-object code)
@@ -561,13 +546,10 @@
 
   (define (ssl-drain client stream k)
     (if (positive? (ssl/num-bytes client))
-        (let ([buf (ssl-output-buffer client)]
-              ;; [ex (current-exception-state)]
-              )
+        (let ([buf (ssl-output-buffer client)])
           ((uv/stream-write stream buf)
            (lambda (n)
              (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
-             ;; (current-exception-state ex)
              (k))))
         (k)))
 
@@ -1165,11 +1147,14 @@ acc item)
 
   (define (uv/call loop f)
     (letrec ([a (make-handler UV_ASYNC)]
+             [ex (current-exception-state)]
              [code (foreign-callable
                     (lambda (h)
                       (unlock-object code)
                       (handle-close a nothing)
-                      (f))
+                      (add-to-callbacks (lambda ()
+                                          (current-exception-state ex)
+                                          (f))))
                     (void*)
                     void)])
       (lock-object code)
@@ -1178,11 +1163,14 @@ acc item)
 
   (define (uv/call-after loop timeout repeat cb)
     (letrec ([a (make-handler UV_TIMER)]
+             [ex (current-exception-state)]
              [code (foreign-callable
                     (lambda (h)
-                      (unless (cb)
-                        (unlock-object code)
-                        (handle-close a nothing)))
+                      (add-to-callbacks (lambda ()
+                                          (current-exception-state ex)
+                                          (unless (cb)
+                                            (unlock-object code)
+                                            (handle-close a nothing)))))
                     (void*)
                     void)])
       (lock-object code)
