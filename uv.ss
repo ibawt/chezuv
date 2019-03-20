@@ -197,17 +197,17 @@
                    (on-line #f))))))
 
  (define (read-headers reader done)
-   (let ([lines '()])
-     (uv/read-lines reader
-                 (lambda (line)
-                   (if (or (not line) (= 0 (bytevector-length line)))
-                       (begin
-                         (if line
-                             (done (reverse lines)))
-                         #f)
-                       (begin
-                         (set! lines (cons line lines))
-                         #t))))))
+   (define lines '())
+   (uv/read-lines reader
+                  (lambda (line)
+                    (if (or (not line) (= 0 (bytevector-length line)))
+                        (begin
+                          (if line
+                              (done (reverse lines)))
+                          #f)
+                        (begin
+                          (set! lines (cons line lines))
+                          #t)))))
 
  (define (parse-headers raw)
    (define (split-header s)
@@ -232,42 +232,39 @@
   (define (uv/stop loop)
     (uv-stop loop))
 
-  (define uv/call-with-loop
-    (lambda (f)
-      (let ([l #f])
-        (set! l (uvloop-create))
-        (register-signal-handlers l)
-        (f l)
-        (let lp ((r (uv-run l 1)))
-          (pump-callbacks)
-          (when (positive? r)
-              (lp (uv-run l 1))))
-        (uv-stop l))))
+  (define (uv/call-with-loop f)
+    (define loop (uvloop-create))
+    (register-signal-handlers loop)
+    (f loop)
+    (let lp ((r (uv-run loop 1))) ;; run event loop for one iteration
+      (pump-callbacks) ;; we call the callbacks here to avoid stale foreign contexts
+      (when (positive? r)
+        (lp (uv-run loop 1))))
+    (uv-stop loop))
 
-  (define uv/getaddrinfo
-    (lambda (loop name)
-       (lambda (k)
-         (letrec ([hint (make-ftype-pointer addrinfo (alloc-zero (ftype-sizeof addrinfo)))]
-                  [req (make-req UV_GETADDRINFO)]
-                  [ex (current-exception-state)]
-                  [code (foreign-callable
-                         (lambda (req status addr)
-                           (foreign-free req)
-                           (foreign-free (ftype-pointer-address hint))
-                           (unlock-object code)
-                           (add-to-callbacks (lambda ()
-                                               (current-exception-state ex)
-                                               (if (= 0 status)
-                                                   (k addr)
-                                                   (error 'getaddrinfo "invalid status" status))
-                                               (uv-freeaddrinfo addr))))
-                         (void* int (* addrinfo))
-                         void)])
-           (lock-object code)
-           (ftype-set! addrinfo (ai_family) hint AF_INET)
-           (ftype-set! addrinfo (ai_socktype) hint SOCK_STREAM)
-           (check (uv-getaddrinfo loop req (foreign-callable-entry-point code)
-                                  name #f hint))))))
+  (define (uv/getaddrinfo loop name)
+    (lambda (k)
+      (letrec ([hint (make-ftype-pointer addrinfo (alloc-zero (ftype-sizeof addrinfo)))]
+               [req (make-req UV_GETADDRINFO)]
+               [ex (current-exception-state)]
+               [code (foreign-callable
+                      (lambda (req status addr)
+                        (foreign-free req)
+                        (foreign-free (ftype-pointer-address hint))
+                        (unlock-object code)
+                        (add-to-callbacks (lambda ()
+                                            (current-exception-state ex)
+                                            (if (= 0 status)
+                                                (k addr)
+                                                (error 'getaddrinfo "invalid status" status))
+                                            (uv-freeaddrinfo addr))))
+                      (void* int (* addrinfo))
+                      void)])
+        (lock-object code)
+        (ftype-set! addrinfo (ai_family) hint AF_INET)
+        (ftype-set! addrinfo (ai_socktype) hint SOCK_STREAM)
+        (check (uv-getaddrinfo loop req (foreign-callable-entry-point code)
+                               name #f hint)))))
 
   (define (uv/tcp-connect loop addr)
     (lambda (k)
@@ -392,9 +389,8 @@
 
 
   (define (uv/read-fully reader n on-done)
-    (let ([bv (make-bytevector n)])
-      (reader bv 0 n (lambda (bv len)
-                       (on-done bv)))))
+    (reader (make-bytevector n) 0 n (lambda (bv len)
+                                      (on-done bv))))
 
   (define (header-value headers key)
     (let ([v (assoc key headers)])
@@ -599,28 +595,19 @@
   (define (tls-connect ctx stream)
     (let ([client (ssl/make-stream ctx #t)])
       (lambda (k)
-        ((check-ssl client stream
-                    (lambda ()
-                      (ssl/connect client)))
-         (lambda (n)
-           (k (list client
-                    (make-tls-reader client stream)
-                    (make-tls-writer client stream))))))))
+        (let/async ([n (<- (check-ssl client stream (lambda () (ssl/connect client))))])
+                   (k (list client
+                            (make-tls-reader client stream)
+                            (make-tls-writer client stream)))))))
 
   (define (tls-accept ctx stream)
     (let ([client (ssl/make-stream ctx #f)])
       (lambda (k)
-        ((check-ssl client stream
-                    (lambda ()
-                      (ssl/accept client)))
-         (lambda (n)
-           ((check-ssl client stream
-                       (lambda ()
-                         (ssl/do-handshake client)))
-            (lambda (n)
-              (k (list client
-                       (make-tls-reader client stream)
-                       (make-tls-writer client stream))))))))))
+        (let/async ([n (<- (check-ssl client stream (lambda () (ssl/accept client))))]
+                    [n (<- (check-ssl client stream (lambda () (ssl/do-handshake client))))])
+                   (k (list client
+                            (make-tls-reader client stream)
+                            (make-tls-writer client stream)))))))
 
   (define (uv/write-http-response writer req)
     (writer "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))
