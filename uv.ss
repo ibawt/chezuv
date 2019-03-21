@@ -1,10 +1,6 @@
 ;; -*- geiser-scheme-implementation: chez -*-
 (library (uv)
-  (export uv/call-with-loop
-          uv/string->url
-          uv/url-host
-          uv/url-protocol
-          uv/url-path
+  (export uv/call-with
           uv/call
           uv/url-port
           uv/close
@@ -30,63 +26,28 @@
           (utils)
           (log)
           (libuv)
-          (openssl)
           (alloc)
           (irregex))
 
-  (define callbacks '())
+  (define-record-type uv-context
+    (fields loop (mutable callbacks)))
 
-  (define (add-to-callbacks f)
-    (set! callbacks (cons f callbacks)))
+  (define-record-type uv-stream
+    (fields context stream reader writer))
 
-  (define (call x)
-    (x))
+  (define (uv-context-push-callback! uv f)
+    (uv-context-callbacks-set! uv (cons f (uv-context-callbacks uv))))
 
-  (define (pump-callbacks)
-    (let [(ex (current-exception-state))]
-      (for-each call callbacks)
-      (set! callbacks '())
-      (current-exception-state ex)))
-
-  (define <- #f) ;; dummy else it won't compile in the importing module
-  (define-syntax let/async
-    (syntax-rules (<-)
-      ((_ () body ...)
-       (let () body ...))
-
-      ((_ ((name (<- value)) next ...) body ...)
-       (value (lambda (name)
-                (let/async (next ...)
-                           body ...))))
-
-      ((_ (((name ...) (<- value)) next ...) body ...)
-       (value (lambda (name ...)
-                (let/async (next ...)
-                           body ...))))
-
-
-      ((_ ((name value) next ...) body ...)
-       (let ((name value))
-         (let/async (next ...)
-                    body ...)))))
-
-  (define-record-type http-request
-    (fields headers body method url))
-
-  (define-record-type http-response
-    (fields headers body status version code))
-
-  (define-record-type url
-    (fields protocol host path port))
-
-  (define (nothing . args)
-    #f)
-
-  (define uv-error? positive?)
+  (define (uv-context-pump-callbacks! uv)
+    (for-each (lambda (x) (x)) (uv-context-callbacks uv))
+    (uv-context-callbacks-set! uv '()))
 
   (define-condition-type &uv/error &condition make-uv-error uv/error?
     (code uv-error-code)
     (message uv-error-message))
+
+  (define (nothing . args)
+    #f)
 
   (define-syntax check
     (syntax-rules ()
@@ -99,8 +60,8 @@
              (raise (make-uv-error err errstr))))))))
 
   (define buf-pool '())
-
   (define buf-size 65535)
+
   (define (get-buf)
     (if (null? buf-pool)
         (foreign-alloc buf-size)
@@ -128,18 +89,18 @@
                             (if (= 13 (bytevector-u8-ref bv (- num-read 2)))
                                 (- num-read 2) (- num-read 1)))))
 
-  (define (register-signal-handlers uv-loop)
+  (define (register-signal-handlers uv)
     (letrec ([sig-handle (make-handler UV_SIGNAL)]
              [code (foreign-callable
                     (lambda (sig-handle signum)
                       (when (= signum SIGINT)
                         (close-all-handles uv-loop)
-                        (uv-stop uv-loop)
+                        (uv-stop (uv-loop uv))
                         (unlock-object code)))
                     (void* int)
                     void)])
       (lock-object code)
-      (check (uv-signal-init uv-loop sig-handle))
+      (check (uv-signal-init (uv-loop uv) sig-handle))
       (check (uv-signal-start-one-shot sig-handle
                                        (foreign-callable-entry-point code)
                                        SIGINT))))
@@ -196,53 +157,27 @@
                  (begin
                    (on-line #f))))))
 
- (define (read-headers reader done)
-   (define lines '())
-   (uv/read-lines reader
-                  (lambda (line)
-                    (if (or (not line) (= 0 (bytevector-length line)))
-                        (begin
-                          (if line
-                              (done (reverse lines)))
-                          #f)
-                        (begin
-                          (set! lines (cons line lines))
-                          #t)))))
 
- (define (parse-headers raw)
-   (define (split-header s)
-     (if (= 0 (string-length s))
-         '()
-         (let ([pos (find-char s #\: 0)])
-           (if (= -1 pos) (error 'split-header "can't find :")
-               (let ([next (find-not-char s #\space (+ 1 pos))])
-                 `(,(substring s 0 pos) ,(substring s (or next (+ 1 pos)) (string-length s))))))))
-   (map (lambda (x)
-          (split-header (utf8->string x)))
-        raw))
+  (define (uv/close uv)
+    (uv-stop (uv-loop uv))
+    (close-all-handles (uv-loop uv)))
 
- (define (parse-status status-line)
-   (let ([status (string-split (utf8->string status-line) #\space)])
-     (list (car status) (string->number (cadr status)) (caddr status))))
+  (define (uv/stop uv)
+    (uv-stop (uv-loop uv)))
 
-  (define (uv/close loop)
-    (uv-stop loop)
-    (close-all-handles loop))
-
-  (define (uv/stop loop)
-    (uv-stop loop))
-
-  (define (uv/call-with-loop f)
-    (define loop (uvloop-create))
-    (register-signal-handlers loop)
-    (f loop)
-    (let lp ((r (uv-run loop 1))) ;; run event loop for one iteration
-      (pump-callbacks) ;; we call the callbacks here to avoid stale foreign contexts
+  (define (uv/call-with-context f)
+    (define ctx (make-uv-context (uvloop-create) '()))
+    (register-signal-handlers ctx)
+    (f uv)
+    (let lp ((r (uv-run (uv-context ctx) 1))) ;; run event loop for one iteration
+      (info "r = ~a" r)
+      (uv-context-pump-callbacks! ctx) ;; we call the callbacks here to avoid stale foreign contexts
       (when (positive? r)
-        (lp (uv-run loop 1))))
-    (uv-stop loop))
+        (lp (uv-run (uv-context-loop ctx) 1))))
+    (uvloop-close (uv-context-loop loop))
+    (uvloop-destroy (uv-context-loop loop)))
 
-  (define (uv/getaddrinfo loop name)
+  (define (uv/getaddrinfo ctx name)
     (lambda (k)
       (letrec ([hint (make-ftype-pointer addrinfo (alloc-zero (ftype-sizeof addrinfo)))]
                [req (make-req UV_GETADDRINFO)]
@@ -252,7 +187,8 @@
                         (foreign-free req)
                         (foreign-free (ftype-pointer-address hint))
                         (unlock-object code)
-                        (add-to-callbacks (lambda ()
+                        (uv-push-callback! uv
+                                           (lambda ()
                                             (current-exception-state ex)
                                             (if (= 0 status)
                                                 (k addr)
@@ -263,18 +199,20 @@
         (lock-object code)
         (ftype-set! addrinfo (ai_family) hint AF_INET)
         (ftype-set! addrinfo (ai_socktype) hint SOCK_STREAM)
-        (check (uv-getaddrinfo loop req (foreign-callable-entry-point code)
+        (check (uv-getaddrinfo (uv-loop uv) req (foreign-callable-entry-point code)
                                name #f hint)))))
 
-  (define (uv/tcp-connect loop addr)
+  (define (uv/tcp-connect uv addr)
     (lambda (k)
       (letrec* ([conn (make-handler UV_STREAM)]
                 [ex (current-exception-state)]
                 [socket (make-handler UV_TCP)]
                 [code (foreign-callable
                        (lambda (conn status)
+                         (info "uv/tcp-connect: status: ~a" status)
                          (unlock-object code)
-                         (add-to-callbacks (lambda ()
+                         (uv-push-callback! uv
+                                            (lambda ()
                                              (current-exception-state ex)
                                              (if (= 0 status)
                                                  (k socket)
@@ -282,17 +220,19 @@
                        (void* int)
                        void)])
         (lock-object code)
-        (check (uv-tcp-init loop socket))
+        (info "connecting")
+        (check (uv-tcp-init (uv-loop uv) socket))
+        (info "tcp-init")
         (check (uv-tcp-connect conn socket addr
                                (foreign-callable-entry-point code))))))
 
 
-  (define (uv/make-idle loop)
+  (define (uv/make-idle uv)
     (lambda (k)
       (letrec* ([idle (make-handler UV_IDLE)]
                 [ex (current-exception-state)]
                 [code (foreign-callable (lambda (ll)
-                                          (add-to-callbacks
+                                          (uv-push-callback! uv
                                            (lambda ()
                                              (current-exception-state ex)
                                              (if (k)
@@ -303,11 +243,11 @@
                                                    (foreign-free idle))))))
                                         (void*)
                                         void)])
-        (check (uv-idle-init loop idle))
+        (check (uv-idle-init (uv-loop uv) idle))
         (lock-object code)
         (check (uv-idle-start idle (foreign-callable-entry-point code))))))
 
-  (define (uv/stream-write stream s)
+  (define (uv/stream-write ctx stream s)
      (lambda (k)
        (letrec ([buf (if (string? s) (string->buf s) s)]
                 [write-req (make-req UV_WRITE)]
@@ -327,7 +267,7 @@
          (lock-object code)
          (check (uv-write write-req stream buf 1 (foreign-callable-entry-point code))))))
 
-  (define (uv/stream-read-raw stream cb)
+  (define (uv/stream-read-raw ctx stream cb)
     (letrec ([ex (current-exception-state)]
              [code (foreign-callable
                     (lambda (s nb buf)
@@ -345,7 +285,7 @@
       (lock-object code)
       (check (uv-read-start stream alloc-buffer (foreign-callable-entry-point code)))))
 
-  (define (uv/stream-read stream cb)
+  (define (uv/stream-read ctx stream cb)
     (uv/stream-read-raw stream (lambda (nb buf)
                                  (if (and nb buf)
                                      (let ([p (make-bytevector nb)])
@@ -367,6 +307,7 @@
           (let ([len (if (<= buf-len (+ read-pos len))
                          (- buf-len read-pos)
                          len)])
+            (info "bv len: ~a, buf-len: ~a, read-pos: ~a" (bytevector-length bv) buf-len read-pos)
             (bytevector-copy! buf read-pos bv start len)
             (set! read-pos (+ read-pos len))
             (when (>= read-pos buf-len)
@@ -420,26 +361,9 @@
                                 (k (list status headers #t))))
                           (error 'eof "read to end of line"))))))
 
-  (define (uv/read-http-request reader)
-    (lambda (k)
-      (read-headers reader
-                    (lambda (headers)
-                      (if (pair? headers)
-                          (let* ([status (parse-status (car headers))]
-                                 [headers (parse-headers (cdr headers))]
-                                 [content-length (header->number headers "Content-Length")])
-                            (if content-length
-                                (begin
-                                  (if (= 0 content-length)
-                                      (k (list status headers #f))
-                                      (uv/read-fully reader content-length
-                                                     (lambda (body)
-                                                       (k (list status headers body))))))
-                                (k (list status headers #t))))
-                          (error 'eof "read to end of line"))))))
 
 
-  (define (uv/close-stream stream)
+  (define (uv/close-stream ctx stream)
     (letrec ([shutdown-req (make-req UV_SHUTDOWN)]
              [code (foreign-callable (lambda (req status)
                                        (unlock-object code)
@@ -452,36 +376,10 @@
       (check (uv-shutdown shutdown-req stream (foreign-callable-entry-point code)))))
 
   (define (addr->sockaddr addr port)
+    (info "addr->sockaddr")
     (let ([s (ftype-ref addrinfo (ai_addr) addr)])
       (sockaddr-set-port s port)
       s))
-
-  (define url-regex (irregex "(?<protocol>.+)://(?<host>[A-Za-z0-9._]+):?(?<port>\\d*)/?(?<path>.*)"))
-  (define default-ports
-    '((http 80)
-      (https 443)))
-
-  (define (uv/string->url u)
-    (let ([m (irregex-search url-regex u)])
-      (if m
-          (let ([proto (string->symbol (irregex-match-substring m 'protocol))])
-            `((host ,(irregex-match-substring m 'host))
-              (protocol ,proto)
-              (port ,(or (string->number (irregex-match-substring m 'port)) (cadr (assoc proto default-ports))))
-              (path ,(string-append "/" (irregex-match-substring m 'path)))))
-          #f)))
-
-  (define (uv/url-host url)
-    (cadr (assoc 'host url)))
-
-  (define (uv/url-port url)
-    (cadr (assoc 'port url)))
-
-  (define (uv/url-protocol url)
-    (cadr (assoc 'protocol url)))
-
-  (define (uv/url-path url)
-    (cadr (assoc 'path url)))
 
   (define (uv/ipv4->sockaddr addr)
     (let* ([split (string-split addr #\:)]
@@ -495,140 +393,30 @@
             (foreign-free (ftype-pointer-address s))
             (error 'ipv4->sockaddr "error in making ipv4" r)))))
 
-  (define (uv/tcp-listen loop addr on-conn)
-    (letrec ([s-addr (uv/ipv4->sockaddr addr)]
-             [h (make-handler UV_TCP)]
-             [ex (current-exception-state)]
-             [code (foreign-callable
-                    (lambda (server status)
-                      (add-to-callbacks (lambda ()
-                                          (current-exception-state ex)
-                                          (if (= 0 status)
-                                              (let ([client (make-handler UV_TCP)])
-                                                (check (uv-tcp-init loop client))
-                                                (check (uv-accept server client))
-                                                (on-conn #f server client))
-                                              (on-conn status server #f)))))
-                    (void* int)
-                    void)])
-      (lock-object code)
-      (check (uv-tcp-init loop h))
-      (check (uv-tcp-bind h (ftype-pointer-address s-addr) 0))
-      (check (uv-listen h 511 (foreign-callable-entry-point code)))
-      (foreign-free (ftype-pointer-address s-addr))
-      h))
-
-  (define (ssl-output-buffer client)
-    (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
-           [base (get-buf)]
-           [n (ssl/drain-output-buffer client base buf-size)])
-      (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 base))
-      (ftype-set! uv-buf (len) buf n)
-      buf))
-
-  (define (ssl-type s)
-    (if (ssl/client? s) "CLIENT" "SERVER"))
-
-  (define (check-ssl client stream f)
+  (define (uv/tcp-listen ctx addr)
     (lambda (k)
-      (let lp ([n (f)])
-        (if (ssl/error? n)
-            (let ([e (ssl/get-error client n)])
-              ;; TODO: why do I not get any other type of error
-              (cond
-               ((= e ssl-error-want-read) (flush-ssl client stream (lambda () (lp (f)))))
-               (else (raise (ssl/library-error)))))
-            (k n)))))
-
-  (define (ssl-drain client stream k)
-    (if (positive? (ssl/num-bytes client))
-        (let ([buf (ssl-output-buffer client)])
-          ((uv/stream-write stream buf)
-           (lambda (n)
-             (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
-             (k))))
-        (k)))
-
-  (define (ssl-fill client stream k)
-    (uv/stream-read-raw stream
-                        (lambda (nb buf)
-                          (if nb
-                              (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
-                                (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                                (if (= n nb)
-                                    (k)
-                                    (error 'check-ssl "probably need to loop but will be annoying " n))) ;; TODO: fix this I think at 16k
-                              (error 'check-ssl "failed to read bytes" nb)))))
-
-  (define (flush-ssl client stream k)
-    (ssl-drain client stream (lambda () (ssl-fill client stream k))))
-
-  (define (tls-shutdown tls stream)
-    (lambda (k)
-      ((check-ssl tls stream (lambda () (ssl/shutdown tls))) k)))
-
-  (define (make-tls-writer client stream)
-    (lambda (buf)
-      (lambda (k)
-        (let ([buf (if (string? buf) (string->buf buf) buf)])
-          ((check-ssl client stream (lambda ()
-                                      (ssl/write client
-                                                 (ftype-pointer-address (ftype-ref uv-buf (base) buf))
-                                                 (ftype-ref uv-buf (len) buf))))
-           (lambda (n)
-             (flush-ssl client stream (lambda () (k n)))))))))
-
-  (define (make-tls-reader client stream)
-    (uv/make-reader stream
-                    (lambda (on-read)
-                      (let ([buf (get-buf)])
-                        ((check-ssl client stream
-                                    (lambda ()
-                                      (ssl/read client buf buf-size)))
-                         (lambda (n)
-                           (let ([bv (make-bytevector n)])
-                             (memcpy bv buf n)
-                             (info "tls-reader: ~a bytes" n)
-                             (free-buf buf)
-                             (on-read stream bv))))))))
-
-  (define (tls-connect ctx stream)
-    (let ([client (ssl/make-stream ctx #t)])
-      (lambda (k)
-        (let/async ([n (<- (check-ssl client stream (lambda () (ssl/connect client))))])
-                   (k (list client
-                            (make-tls-reader client stream)
-                            (make-tls-writer client stream)))))))
-
-  (define (tls-accept ctx stream)
-    (let ([client (ssl/make-stream ctx #f)])
-      (lambda (k)
-        (let/async ([n (<- (check-ssl client stream (lambda () (ssl/accept client))))]
-                    [n (<- (check-ssl client stream (lambda () (ssl/do-handshake client))))])
-                   (k (list client
-                            (make-tls-reader client stream)
-                            (make-tls-writer client stream)))))))
-
-  (define (uv/write-http-response writer req)
-    (writer "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))
-
-  (define (keep-alive? req)
-    (let ([version (string=? "HTTP/1.1" (caddar req))]
-          [conn (header-value (cadr req) "Connection")])
-      (if version
-          (not (and conn (string=? "close" conn)))
-          #f)))
-
-  (define (serve-http reader writer on-done)
-    (let/async ([req (<- (uv/read-http-request reader))]
-                [status (<- (uv/write-http-response writer req))])
-               (if (keep-alive? req)
-                   (begin
-                     (serve-http reader writer on-done))
-                   (begin
-                     (on-done status)))))
-
-  (define h2-frame-premamble-size (+ 3 1 1 4))
+      (letrec ([s-addr (uv/ipv4->sockaddr addr)]
+              [h (make-handler UV_TCP)]
+              [ex (current-exception-state)]
+              [code (foreign-callable
+                     (lambda (server status)
+                       (info "tcp-listen callback")
+                       (uv-push-callback! uv (lambda ()
+                                           (current-exception-state ex)
+                                           (if (= 0 status)
+                                               (let ([client (make-handler UV_TCP)])
+                                                 (check (uv-tcp-init loop client))
+                                                 (check (uv-accept server client))
+                                                 (k #f server client))
+                                               (k status server #f)))))
+                     (void* int)
+                     void)])
+       (lock-object code)
+       (check (uv-tcp-init (uv-loop uv) h))
+       (check (uv-tcp-bind h (ftype-pointer-address s-addr) 0))
+       (check (uv-listen h 511 (foreign-callable-entry-point code)))
+       (foreign-free (ftype-pointer-address s-addr))
+       h)))
 
   (define (bytevector->uv-buf bv)
     (let ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
@@ -638,499 +426,12 @@
       (ftype-set! uv-buf (len) buf (bytevector-length bv))
       buf))
 
-  (define memcpy2
-    (foreign-procedure "memcpy"
-                       (void* u8* int)
-                       void*))
+  (define (uv/serve-http stream)
+    (lambda (on-done)
+      (serve-http (uv/make-reader stream (lambda (b) (uv/stream-read stream b)))
+                  (lambda (s) (uv/stream-write stream s))
+                  on-done)))
 
-  (define h2-preface "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
-
-  (define h2-frame-type-data 0)
-  (define h2-frame-type-headers 1)
-  (define h2-frame-type-priority 2)
-  (define h2-frame-type-rst-stream 3)
-  (define h2-frame-type-settings 4)
-  (define h2-frame-type-push-promise 5)
-  (define h2-frame-type-ping 6)
-  (define h2-frame-type-goaway 7)
-  (define h2-frame-type-window-update 8)
-  (define h2-frame-type-continuation 9)
-
-  (define h2-settings-table-size 1)
-  (define h2-settings-enable-push 2)
-  (define h2-settings-max-concurrent-streams 3)
-  (define h2-settings-initial-window-size 4)
-  (define h2-settings-max-frame-size 5)
-  (define h2-settings-max-header-list-size 6)
-
-  (define h2-error-no-error 0)
-  (define h2-error-protocol-error 1)
-  (define h2-error-internal-error 2)
-  (define h2-error-flow-control-error 3)
-  (define h2-error-settings-timeout 4)
-  (define h2-error-stream-closed 5)
-  (define h2-error-frame-size-error 6)
-  (define h2-error-refused-stream 7)
-  (define h2-error-cancel 8)
-  (define h2-error-compression-error 9)
-  (define h2-error-connect-error 10)
-  (define h2-error-enhance-your-calm 11)
-  (define h2-error-inadequate-security 12)
-  (define h2-error-http/1.1-required 13)
-
-
-  (define (make-frame type flags id payload)
-    (let* ([payload-len (if payload (bytevector-length payload) 0)]
-           [buf (make-bytevector (+ payload-len h2-frame-premamble-size))])
-      (bytevector-u8-set! buf 0 (logand (fxsra payload-len 16) 255))
-      (bytevector-u8-set! buf 1 (logand (fxsra payload-len 8) 255))
-      (bytevector-u8-set! buf 2 (logand payload-len 255))
-      (bytevector-u8-set! buf 3 type )
-      (bytevector-u8-set! buf 4 flags)
-      (bytevector-u32-set! buf 5 id 'big)
-      (when (positive? payload-len)
-        (bytevector-copy! payload 0 buf h2-frame-premamble-size payload-len))
-      buf))
-
-  (define write-frame
-    (lambda (writer type flags id payload)
-      (lambda (k)
-        ((writer (bytevector->uv-buf (make-frame type flags id payload))) k))))
-
-  (define-record-type h2-frame
-    (fields type flags id payload))
-
-  (define read-frame
-    (lambda (reader)
-      (lambda (k)
-        (reader (make-bytevector h2-frame-premamble-size) 0 h2-frame-premamble-size
-                (lambda (bv num-read)
-                  (unless (= num-read h2-frame-premamble-size)
-                    (error 'read-frame "not enough data"))
-                  (let ([len (bytevector-u24-ref bv 0 'big)]
-                        [type (bytevector-u8-ref bv 3)]
-                        [flags (bytevector-u8-ref bv 4)]
-                        [id (bytevector-u32-ref bv 5 'big)])
-                    (if (zero? len)
-                        (k (make-h2-frame type flags id (make-bytevector 0)))
-                        (reader (make-bytevector len) 0 len
-                                (lambda (bv num-read)
-                                  (unless (= num-read len)
-                                    (error 'read-frame "error reading frame payload"))
-                                  (k (make-h2-frame type flags id bv)))))))))))
-
-  (define (async-reader reader)
-    (lambda (len)
-      (lambda (k)
-        (reader (make-bytevector len) 0 len
-                (lambda (bv num-read)
-                  (k bv num-read))))))
-  (define (h2-check-preface reader)
-    (lambda (k)
-      (reader (make-bytevector (string-length h2-preface)) 0 (string-length h2-preface)
-              (lambda (bv num-read)
-                (if (and (= num-read (string-length h2-preface)) (string=? (utf8->string bv) h2-preface))
-                    (k #t)
-                    (error 'h2-check-preface "invalid preface" bv))))))
-
-  (define (h2-default-settings)
-    '((h2-settings-table-size 4096)
-      (h2-settings-enable-push #t)
-      (h2-settings-max-concurrent-streams +inf.0)
-      (h2-settings-initial-window-size 65535)
-      (h2-settings-max-frame-size 16384)
-      (h2-settings-max-header-list-size +inf.0)))
-
-  (define-condition-type &h2-error &condition make-h2-error h2-error?
-    (code h2-error-code)
-    (message h2-error-message))
-
-  (define h2-settings-id->symbol
-    (lambda (x)
-      (cond
-       ((= x h2-settings-table-size) 'h2-settings-table-size)
-       ((= x h2-settings-enable-push) 'h2-settings-enable-push)
-       ((= x h2-settings-max-concurrent-streams) 'h2-settings-max-concurrent-streams)
-       ((= x h2-settings-initial-window-size) 'h2-settings-initial-window-size)
-       ((= x h2-settings-max-frame-size) 'h2-settings-max-frame-size)
-       ((= x h2-settings-max-header-list-size) 'h2-settings-max-header-list-size)
-       (else (error 'h2-settings-id->symbol "invalid id" x)))))
-
-  (define (read-settings-frame frame)
-    (let ([p (h2-frame-payload frame)])
-      (unless (zero? (modulo (bytevector-length p) 6))
-        (raise (make-h2-error h2-error-frame-size-error "settings not divisble by 6")))
-      (let lp ([i 0]
-               [s '()])
-        (if (>= i (bytevector-length p))
-            s
-            (let ([id (h2-settings-id->symbol (bytevector-u16-ref p i 'big))]
-                  [value (bytevector-u32-ref p (+ i 2) 'big)])
-              (lp (+ i 6) (cons (list id value) s)))))))
-
-  (define (merge-alist old new)
-    (fold-left
-     (lambda (
-
-acc item)
-       (let ([other (assq (car item) new)])
-         (if other
-             (cons (list (car item) (cadr other)) acc)
-             (cons item acc))))
-     '() old))
-
-  (define h2-settings-ack 1)
-
-  (define (write-h2-ack-settings writer)
-    (write-frame writer h2-frame-type-settings h2-settings-ack 0 #f))
-
-  (define h2-ping-ack 1)
-  (define h2-header-flag-end-stream 1)
-  (define h2-header-flag-end-headers 4)
-  (define h2-header-flag-padded 8)
-  (define h2-header-flag-priority 32)
-
-  (define-record-type h2-header-frame
-    (fields pad-length exclusive? stream-dependency weight headers))
-
-  (define (h2-header-flag? frame . values)
-    (let ([v (apply fxlogor values)])
-      (= v (fxlogand v (h2-frame-flags frame)))))
-
-  (define (append-bytevectors . bvs)
-    (let* ([total-size (fold-left (lambda (acc n)
-                                    (+ acc (bytevector-length n))) 0 bvs)]
-           [out (make-bytevector total-size)])
-      (let lp ([i 0]
-               [b bvs])
-        (if (pair? b)
-            (begin
-              (bytevector-copy! (car b) 0 out i (bytevector-length (car b)))
-              (lp (+ i (bytevector-length (car b))) (cdr b)))
-            out))))
-
-  (define (read-h2-header-frame stream frame . payloads)
-    (let ([p (h2-frame-payload frame)]
-          [pad-length #f]
-          [e #f ]
-          [stream-dep #f]
-          [weight #f]
-          [i  0])
-      (when (h2-header-flag? frame h2-header-flag-padded)
-        (set! pad-length (bytevector-u8-ref p 0))
-        (set! i 1))
-      (when (h2-header-flag? frame h2-header-flag-priority)
-        (set! e (logbit? 31 (bytevector-u32-ref p i 'big)))
-        (set! stream-dep (logand (bytevector-u32-ref p i 'big) #x7fffffff))
-        (set! weight (bytevector-u8-ref p (+ i 4)))
-        (set! i (+ i 4 1)))
-      (info "HEADER FRAME")
-      (info "pad-length: ~a" pad-length)
-      (info "flags: ~a" (h2-frame-flags frame))
-      (info "payload is: ~a" p)
-      (info "e: ~a" e)
-      (info "stream-dep: ~a" stream-dep)
-      (info "weight: ~a" weight)
-      (let* ([total-payload (apply append-bytevectors p payloads)]
-             [h (hpack/decode total-payload i (h2-stream-in-header-table stream))])
-        (info "decoded headers: ~a" h)
-        h)))
-
-  (define (process-h2-request stream)
-    #f
-    )
-
-  (define (h2-stream-push-frame! stream frame)
-    (h2-stream-in-frames-set! stream (cons frame (h2-stream-in-frames stream))))
-
-  (define (h2-stream-state=? stream state)
-    (eq? (h2-stream-state stream) state))
-
-  (define (h2-stream-assemble-headers! stream)
-    (h2-stream-headers-set! stream
-                            (let lp ([fragments '()]
-                                     [frames (h2-stream-in-frames stream)])
-                              (if (null? frames)
-                                  (error 'idk "shouldn't get to the end really")
-                                  (cond
-                                   ((= h2-frame-type-continuation (h2-frame-type (car frames)))
-                                    (lp (cons (h2-frame-payload (car frames)) fragments) (cdr frames)))
-                                   ((= h2-frame-type-headers (h2-frame-type (car frames)))
-                                    (apply read-h2-header-frame stream (car frames) (reverse fragments)))
-                                   (else (lp fragments (cdr frames))))))))
-
-  (define-record-type h2-session
-    (fields (mutable settings)
-            (mutable last-used-id)
-            (mutable streams)
-            reader writer
-            (mutable goaway)
-            (mutable window-size)))
-
-  (define (new-h2-session r w)
-    (make-h2-session (h2-default-settings) 0 '() r w #f (cadr (assoc 'h2-settings-initial-window-size (h2-default-settings)))))
-
-  (define-record-type h2-stream
-    (fields id
-            (mutable state)
-            (mutable priority)
-            (mutable in-frames)
-            (mutable out-frames)
-            in-header-table
-            out-header-table
-            (mutable window-size)
-            (mutable headers)
-            (mutable data-frames)))
-
-  (define (h2-session-stream-add! session stream-id)
-    (info "making new session: ~a" stream-id)
-    (if (>= (h2-session-last-used-id session) stream-id)
-        (error 'idk stream-id)
-        (begin
-          (let ([stream (make-h2-stream stream-id
-                                        'idle
-                                        0
-                                        '()
-                                        '()
-                                        (hpack/make-dynamic-table 4096)
-                                        (hpack/make-dynamic-table 4096)
-                                        (h2-session-setting-value session 'h2-settings-initial-window-size)
-                                        #f
-                                        #f)])
-           (h2-session-streams-set! session (cons (list stream-id stream) (h2-session-streams session)))
-           stream))))
-
-  (define-syntax if-let
-    (syntax-rules ()
-      ((_ ([a b] binds ... ) body ...)
-       (let ([a b])
-         (if a
-             (if-let (binds ...)
-                     body ...))))))
-
-  (define (h2-session-setting-value session setting)
-    (let ([e (assoc setting (h2-session-settings session))])
-      (if e
-          (cadr e)
-          (error 'h2-session-settings "invalid setting" setting))))
-
-  (define-syntax assoc-value
-    (syntax-rules ()
-      ((_ key alist)
-       (let ([e (assoc key alist)])
-         (if e
-             (cadr e)
-             #f)))))
-
-  (define (h2-session-find-stream session id)
-    (assoc-value id (h2-session-streams session)))
-
-  (define-syntax else-map
-    (syntax-rules ()
-      ((_ a b)
-       (let ([aa a])
-         (if aa
-             aa
-             b)))))
-
-  (define (h2-stream-valid-for-continuation? stream)
-    (let ([frames (h2-stream-in-frames stream)])
-      (if (null? frames)
-          #f
-          (let* ([last-frame (car frames)]
-                 [type (h2-frame-type (car frames))])
-            (cond
-             ((and (or (eq? h2-frame-type-headers type)
-                       (eq? h2-frame-type-priority type)
-                       (eq? h2-frame-type-continuation type))
-                   (not (fxlogbit? 2 (h2-frame-flags last-frame))))
-              #t)
-             (else #f))))))
-
-  (define (h2-handler-goaway session frame)
-    (info "going away!")
-    #f)
-
-  (define (h2-handler-ping session frame)
-    (info "ping handler")
-    (cond
-     ((not (= 0 (h2-frame-id frame))) (raise (make-h2-error h2-error-protocol-error "invalid stream id for ping")))
-     ((not (= 8 (bytevector-length (h2-frame-payload frame))))
-      (raise (make-h2-error h2-error-frame-size-error "invalid size for ping frame")))
-     (else
-      (begin
-        (info "ping handler")
-        (((h2-session-writer session) (bytevector->uv-buf (make-frame h2-frame-type-ping h2-ping-ack 0 (h2-frame-payload frame))))
-         (lambda (n)
-           (info "wrote ping ack") #f)))))
-    #t)
-
-  (define (h2-handler-settings session frame)
-    (begin
-      (if (h2-header-flag? frame h2-settings-ack)
-          (begin
-            (info "remote acked settings")
-            #t)
-          (begin
-            (h2-session-settings-set! session (merge-alist (h2-session-settings session) (read-settings-frame frame)))
-            ((write-h2-ack-settings (h2-session-writer session)) (lambda (n)
-                                                                   #t))))
-      #t))
-
-  (define (h2-handler-continuation session frame)
-    (info "continuation")
-    (let ([stream (h2-session-find-stream session (h2-frame-id frame))])
-      (unless (h2-stream-valid-for-continuation? stream)
-        (raise (make-h2-error h2-error-protocol-error "last frame was not a valid frame for a continuation")))
-      (h2-stream-push-frame! stream frame)
-      (when (h2-header-flag? frame 4)
-        (h2-stream-assemble-headers! frame))
-      (when (h2-header-flag? frame 1)
-        (h2-stream-state-set! stream 'half-closed-remote)
-        (process-h2-request stream))))
-
-  (define (h2-handler-data session frame)
-    (begin
-      (info "data")
-      ;; TODO: padding verification
-      (let ([stream (h2-session-find-stream session (h2-frame-id frame))])
-        (cond
-         ((= 0 (h2-frame-id frame))
-          (raise (make-h2-error h2-error-protocol-error "stream id cannot be 0 for data frames")))
-         ((not stream) (make-h2-error h2-error-protocol-error "no stream found for provided stream id")))
-        (if (or (eq? 'open (h2-stream-state stream)) (eq? 'half-closed-local (h2-stream-state stream)))
-            (h2-stream-push-frame! stream frame)
-            (raise (make-h2-error h2-error-protocol-error "wrong stream state")))
-        (when (fxlogbit? 1 (h2-frame-flags frame))
-          ;; end-stream
-          (h2-stream-state-set! stream 'half-closed-remote)
-          (process-h2-request stream))))
-    )
-
-  (define (h2-handler-window-update session frame)
-    (begin
-      (info "window update")
-      (let ([size (bytevector-u32-ref (h2-frame-payload frame) 0 'big)])
-        ;; (info "flags: ~a, stream-id: ~a" (h2-frame-flags frame) (h2-frame-id frame))
-        ;; (info "window-size: ~a" size)
-        #t
-        ))
-    )
-
-  (define (h2-handler-headers session frame)
-    (begin
-      (info "headers")
-      (let ([stream (else-map (h2-session-find-stream session (h2-frame-id frame)) (h2-session-stream-add! session (h2-frame-id frame)))])
-        (unless (h2-stream-state=? stream 'idle)
-          (raise (make-h2-error h2-error-protocol-error "invalid stream state for headers frame")))
-        (h2-stream-state-set! stream 'open)
-        (cond
-         ((not (h2-header-flag? frame h2-header-flag-end-headers))
-          (begin
-            ;; should get continuations
-            (h2-stream-push-frame! stream frame)))
-         ((h2-header-flag? frame h2-header-flag-end-headers h2-header-flag-end-stream)
-          (begin
-            (h2-stream-state-set! stream 'half-closed-remote)
-            (let ([headers (read-h2-header-frame stream frame )])
-              (h2-stream-headers-set! stream headers)
-              (process-h2-request stream))))
-         ((h2-header-flag? frame h2-header-flag-end-headers)
-          (let ([headers (read-h2-header-frame stream frame )])
-            (h2-stream-headers-set! stream headers)))
-         (else
-          (error 'oopsie "shouldn't get here"))))))
-
-  (define (h2-handler-priority session frame)
-    #t)
-
-
-  (define (h2-handler-rst-stream session frame)
-    #t)
-
-  (define (h2-handler-push-promise session frame)
-    #t)
-
-  (define h2-frame-type-handlers
-    (list->vector
-     (list h2-handler-data
-           h2-handler-headers
-           h2-handler-priority
-           h2-handler-rst-stream
-           h2-handler-settings
-           h2-handler-push-promise
-           h2-handler-ping
-           h2-handler-goaway
-           h2-handler-window-update
-           h2-handler-continuation)))
-
-  (define (h2-event-loop session)
-    (lambda (k)
-      (guard (e [(h2-error? e)
-                 (begin
-                   (info "caught a http2 error, should probably do something!: [~a] ~a" (h2-error-code e) (h2-error-message e))
-                   (k #f))])
-             (let lp ()
-               (let/async ([frame (<- (read-frame (h2-session-reader session)))]
-                           [type (h2-frame-type frame)]
-                           [flags (h2-frame-flags frame)])
-                  (info "read a frame: ~a" frame)
-                  (when (> type h2-frame-type-continuation)
-                    (raise (make-h2-error h2-error-protocol-error "invalid frame type")))
-                  (let ([h (vector-ref h2-frame-type-handlers type)])
-                    (unless h (error 'not-implemented "no handler for type" type))
-                    (let ([r (h session frame)])
-                      (lp))))))))
-
-  (define (serve-http2 reader writer on-done)
-    (define session (new-h2-session reader writer))
-    (guard (e [(error? e) (info "error in serving-http2: ~a" e) (on-done #f)])
-           (let/async ([_ (<- (h2-check-preface reader))] ;; check preface for http2
-                       [_ (<- (write-frame writer h2-frame-type-settings 0 0 #f))])
-                      (info "h2 session established")
-                      ((h2-event-loop session) on-done))))
-
-  (define (uv/serve-https ctx stream on-done)
-    ((tls-accept ctx stream)
-     (lambda (tls)
-       (case (ssl/get-selected-alpn (car tls))
-         (h2 (serve-http2 (cadr tls) (caddr tls)
-                          (lambda (ok)
-                            (ssl/free-stream (car tls)) (on-done ok))))
-         (http/1.1 (serve-http (cadr tls) (caddr tls)
-                               (lambda (ok)
-                                 (ssl/free-stream (car tls))
-                                 (on-done ok))))))))
-
-  (define (uv/serve-http stream on-done)
-    (serve-http (uv/make-reader stream (lambda (b) (uv/stream-read stream b)))
-                (lambda (s) (uv/stream-write stream s))
-                on-done))
-
-  (define close-tls-client
-    (lambda (client)
-      (lambda (k)
-        (ssl/free-stream client)
-        (k #t))))
-
-  (define (uv/listen-and-serve-http loop addr)
-    (lambda (k)
-      (uv/tcp-listen loop addr
-                     (lambda (status server client)
-                       (if (not status)
-                           (error 'listen-and-serve-http "failed to accept" status)
-                           (uv/serve-http client
-                                          (lambda (status)
-                                            (uv/close-stream client))))))))
-
-  (define (uv/make-http-request loop url)
-    (lambda (k)
-      (let/async ([addr (<- (uv/getaddrinfo loop (uv/url-host url)))]
-                  [sa (addr->sockaddr addr (uv/url-port url))]
-                  [sock (<- (uv/tcp-connect loop sa))]
-                  [status (<- (uv/stream-write sock (format #f "GET / HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n\r\n" (uv/url-host url))))]
-                  [resp (<- (uv/read-http-response (uv/make-reader sock (lambda (b) (uv/stream-read sock b)))))])
-                 (k resp))))
 
   (define (uv/call loop f)
     (letrec ([a (make-handler UV_ASYNC)]
@@ -1163,14 +464,4 @@ acc item)
       (lock-object code)
       (check (uv-timer-init loop a))
       (check (uv-timer-start a (foreign-callable-entry-point code) timeout repeat))))
-
-  (define (uv/make-https-request loop ctx url)
-    (lambda (k)
-      (let/async ([addr (<- (uv/getaddrinfo loop (uv/url-host url)))]
-                  [stream (<- (uv/tcp-connect loop (addr->sockaddr addr (uv/url-port url))))]
-                  [client (<- (tls-connect ctx stream))]
-                  [status (<- ((caddr client) (format #f "GET ~a HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\nContent-Length: 0\r\n\r\n" (uv/url-path url)
-                                                   (uv/url-host url))))]
-                  [resp (<- (uv/read-http-response (cadr client)))]
-                  [done (<- (tls-shutdown (car client) stream))])
-                 (k resp)))))
+  )

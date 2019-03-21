@@ -31,6 +31,8 @@
           SIGHUP
           SIGINT
           SIGTERM
+          uv-loop-set-data
+          uv-loop-get-data
           uvloop-size
           uv-handle-get-type
           uv-handle-type-name
@@ -71,6 +73,7 @@
           uv-timer-stop
           uv-timer-again
           uv-queue-work
+          uv-error?
           uv-listen
           uv-accept
           uv-ip4-addr)
@@ -85,6 +88,8 @@
     (struct
         (base (* unsigned-8))
       (len size_t)))
+
+  (define uv-error? positive?)
 
   (define UV_EOF -4095)
 
@@ -179,6 +184,16 @@
     (foreign-procedure "uv_run"
                        (void* int)
                        int))
+
+  (define uv-loop-set-data
+    (foreign-procedure "uv_loop_set_data"
+                       (void* void*)
+                       void))
+
+  (define uv-loop-get-data
+    (foreign-procedure "uv_loop_get_data"
+                       (void*)
+                       void*))
 
   (define (uvloop-destroy uv)
     (uvloop-close uv)
@@ -349,8 +364,7 @@
                       (lambda (h)
                         (cb h)
                         (foreign-free h)
-                        (unlock-object code)
-                        )
+                        (unlock-object code))
                       (void*)
                       void)])
 

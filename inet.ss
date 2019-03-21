@@ -11,7 +11,8 @@
    int->ip-address
    sockaddr->ip-address
    sockaddr-set-port)
-  (import (chezscheme))
+  (import (chezscheme)
+          (log))
 
   (define init
     (case (machine-type)
@@ -22,7 +23,7 @@
   (define SOCK_DGRAM 2)
 
   (meta-cond
-   [(eq? 'ta6le (machine-type))
+   [(or (eq? 'a6le (machine-type)) (eq? 'ta6le (machine-type)))
       (define-ftype sa_family_t unsigned-16)
       (define-ftype in_port_t unsigned-16)
 

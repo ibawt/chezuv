@@ -1,10 +1,13 @@
 (library (utils)
   (export
    macro
+   let/async
+   <-
    bytevector-for-each
    inc
    dec
    memcpy
+   memcpy2
    find-char-by
    find-not-char
    find-in-bytevector
@@ -37,6 +40,28 @@
                     (syntax (void))
                     (datum->syntax (syntax l) e))))))))))
 
+  (define <- #f) ;; dummy else it won't compile in the importing module
+  (define-syntax let/async
+    (syntax-rules (<-)
+      ((_ () body ...)
+       (let () body ...))
+
+      ((_ (((name ...) (<- value)) next ...) body ...)
+       (value (lambda (name ...)
+                (let/async (next ...)
+                           body ...))))
+
+      ((_ ((name (<- value)) next ...) body ...)
+       (value (lambda (name)
+                (let/async (next ...)
+                           body ...))))
+
+
+      ((_ ((name value) next ...) body ...)
+       (let ((name value))
+         (let/async (next ...)
+                    body ...)))))
+
   (define bytevector-for-each
     (lambda (f bv)
       (let ([len (bytevector-length bv)])
@@ -52,8 +77,15 @@
     (- x 1))
 
   (define memcpy
+    ;; u8* easy conversion for bytevector
     (foreign-procedure "memcpy"
                        (u8* void* int)
+                       void*))
+
+  (define memcpy2
+    ;; Same as above but the other way
+    (foreign-procedure "memcpy"
+                       (void* u8* int)
                        void*))
 
   (define (find-char-by str f pos)
