@@ -24,24 +24,14 @@
     '((http 80)
       (https 443)))
 
-  (define (uv/string->url s)
+  (define (string->url s)
     (let ([m (irregex-search url-regex s)])
       (if m
           (let ([proto (string->symbol (irregex-match-substring m 'protocol))])
-            `((host ,(irregex-match-substring m 'host))
-              (protocol ,proto)
-              (port ,(or (string->number (irregex-match-substring m 'port)) (cadr (assoc proto default-ports))))
-              (path ,(string-append "/" (irregex-match-substring m 'path)))))
-          (raise (make-url-error "failed to match url")))))
-
-  (define (uv/url-host url)
-    (cadr (assoc 'host url)))
-
-  (define (uv/url-port url)
-    (cadr (assoc 'port url)))
-
-  (define (uv/url-protocol url)
-    (cadr (assoc 'protocol url)))
-
-  (define (uv/url-path url)
-    (cadr (assoc 'path url))))
+            (make-url
+             (irregex-match-substring m 'host)
+             (or (string->number (irregex-match-substring m 'port)) (cadr (assoc proto default-ports)))
+             proto
+             (string-append "/" (irregex-match-substring m 'path))
+             #f #f))
+          (raise (make-url-error "failed to match url"))))))

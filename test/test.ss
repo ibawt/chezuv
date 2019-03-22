@@ -3,6 +3,7 @@
         (srfi s64 testing)
         (log)
         (utils)
+        (url)
         (openssl)
         (uv))
 
@@ -57,28 +58,28 @@
            (system "nginx -c nginx.conf -s quit -p fixtures/nginx")
            )))))
 
-(define http-test-request
-  (lambda (url-string)
-    (let ([url (uv/string->url url-string)])
-      (call/cc
-       (lambda (k)
-         (uv/call-with-loop
-          (lambda (loop)
-            (let/async ([resp (<- (uv/make-http-request loop url))])
-                       (k resp)))))))))
+;; (define http-test-request
+;;   (lambda (url-string)
+;;     (let ([url (uv/string->url url-string)])
+;;       (call/cc
+;;        (lambda (k)
+;;          (uv/call-with-loop
+;;           (lambda (loop)
+;;             (let/async ([resp (<- (uv/make-http-request loop url))])
+;;                        (k resp)))))))))
 
-(define https-test-request
-  (lambda (url-string cert)
-    (let ([url (uv/string->url url-string)])
-      (call/cc
-       (lambda (k)
-         (ssl/call-with-context cert #f #t
-            (lambda (ctx)
-              (uv/call-with-loop
-               (lambda (loop)
-                 (let/async ([resp (<- (uv/make-https-request loop ctx url))])
-                            (info "https-test-request: ~a" resp)
-                            (k resp)))))))))))
+;; (define https-test-request
+;;   (lambda (url-string cert)
+;;     (let ([url (uv/string->url url-string)])
+;;       (call/cc
+;;        (lambda (k)
+;;          (ssl/call-with-context cert #f #t
+;;             (lambda (ctx)
+;;               (uv/call-with-loop
+;;                (lambda (loop)
+;;                  (let/async ([resp (<- (uv/make-https-request loop ctx url))])
+;;                             (info "https-test-request: ~a" resp)
+;;                             (k resp)))))))))))
 
 (define run-command
   (lambda (cmd)
@@ -142,33 +143,35 @@
 
 ;;         (info "resp is: ~a" resp))))
 
-(describe "http requests"
-  (with-nginx
-    (it "should make a simple http request"
-        (let ((resp (http-test-request "http://localhost:8080")))
-          (info "test1 done")
-          (test-equal 200 (cadar resp))))
-    (it "should make a simple https request (verified)"
-        (let ([resp (https-test-request "https://localhost:9090" "./fixtures/nginx/cert.pem")])
-          (test-equal 200 (cadar resp))))
-    ;; (it "should fail with a non verified cert"
-    ;;     (test-error #t (https-test-request "https://localhost:9090" #f))))
+;; (describe "http requests"
+;;   (with-nginx
+;;     (it "should make a simple http request"
+;;         (let ((resp (http-test-request "http://localhost:8080")))
+;;           (info "test1 done")
+;;           (test-equal 200 (cadar resp))))
+;;     (it "should make a simple https request (verified)"
+;;         (let ([resp (https-test-request "https://localhost:9090" "./fixtures/nginx/cert.pem")])
+;;           (test-equal 200 (cadar resp))))
+;;     ;; (it "should fail with a non verified cert"
+;;     ;;     (test-error #t (https-test-request "https://localhost:9090" #f))))
 
-  ))
+;;   ))
 
 (describe
  "url functions"
  (it "should parse a simple url"
-     (let ([url (uv/string->url "http://google.ca")])
-       (test-equal "google.ca" (uv/url-host url))
-       (test-eqv 80 (uv/url-port url))
-       (test-equal "/" (uv/url-path url))))
+     (let ([url (string->url "http://google.ca")])
+       (test-equal "google.ca" (url-host url))
+       (test-eqv 80 (url-port url))
+       (test-equal "/" (url-path url))))
  (it "should parse a complex url"
-     (let ([url (uv/string->url "https://google.ca:8080/foo/bar")])
-       (test-equal "google.ca" (uv/url-host url))
-       (test-equal 'https (uv/url-protocol url))
-       (test-eqv 8080 (uv/url-port url))
-       (test-equal "/foo/bar" (uv/url-path url)))))
+     (let ([url (string->url "https://google.ca:8080/foo/bar")])
+       (test-equal "google.ca" (url-host url))
+       (test-equal 'https (url-protocol url))
+       (test-eqv 8080 (url-port url))
+       (test-equal "/foo/bar" (url-path url))))
+ (it "should barf on an invalid url"
+     (test-error url-error? (string->url "not an url"))))
 
 (describe "string-split"
   (it "should split on a delimiter"
