@@ -9,6 +9,8 @@
           uv/close-stream
           uv/tcp-listen
           uv/stream-write
+          uv/stream-read
+          uv/stream-read->bytevector
           uv/tcp-connect
           uv/make-idle
           uv/call-after
@@ -253,32 +255,34 @@
          (lock-object code)
          (check (uv-write write-req stream buf 1 (foreign-callable-entry-point code))))))
 
-  (define (uv/stream-read ctx stream cb)
-    (letrec ([ex (current-exception-state)]
-             [code (foreign-callable
-                    (lambda (s nb buf)
-                      (unlock-object code)
-                      (check (uv-read-stop stream))
-                      (uv-context-push-callback! ctx (lambda ()
-                                          (current-exception-state ex)
-                                          (if (negative? nb)
-                                              (begin
-                                                (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                                                (cb #f #f))
-                                              (cb nb buf)))))
-                    (void* ssize_t (* uv-buf))
-                    void)])
-      (lock-object code)
-      (check (uv-read-start stream alloc-buffer (foreign-callable-entry-point code)))))
+  (define (uv/stream-read ctx stream)
+    (lambda (k)
+     (letrec ([ex (current-exception-state)]
+              [code (foreign-callable
+                     (lambda (s nb buf)
+                       (unlock-object code)
+                       (check (uv-read-stop stream))
+                       (uv-context-push-callback! ctx (lambda ()
+                                                        (current-exception-state ex)
+                                                        (if (negative? nb)
+                                                            (begin
+                                                              (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                                                              (k #f #f))
+                                                            (k nb buf)))))
+                     (void* ssize_t (* uv-buf))
+                     void)])
+       (lock-object code)
+       (check (uv-read-start stream alloc-buffer (foreign-callable-entry-point code))))))
 
-  (define (uv/stream-read->bytevector ctx stream cb)
-    (uv/stream-read ctx stream (lambda (nb buf)
-                                 (if (and nb buf)
-                                     (let ([p (make-bytevector nb)])
-                                       (memcpy p (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)
-                                       (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                                       (cb stream p))
-                                     (cb #f #f)))))
+  (define (uv/stream-read->bytevector ctx stream)
+    (lambda (k)
+      ((uv/stream-read ctx stream) (lambda (num-bytes buf)
+                                     (if (and num-bytes buf)
+                                         (let ([p (make-bytevector num-bytes)])
+                                           (memcpy p (ftype-pointer-address (ftype-ref uv-buf (base) buf)) num-bytes)
+                                           (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                                           (k stream p))
+                                         (k #f #f))))))
 
   (define (uv/make-reader stream reader)
     ;; TODO: why does this need stream >.>
@@ -319,7 +323,7 @@
     (reader (make-bytevector n) 0 n (lambda (bv len)
                                       (on-done bv))))
 
-  (define (uv/close-stream ctx stream)
+  (define (uv/close-stream stream)
     (letrec ([shutdown-req (make-req UV_SHUTDOWN)]
              [code (foreign-callable (lambda (req status)
                                        (unlock-object code)

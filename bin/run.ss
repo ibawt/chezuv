@@ -25,8 +25,11 @@
      (uv/call-with-context
       (lambda (ctx)
         (let/async ([(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
-                    [_ (<- (uv/stream-write ctx "PONG"))])
-                   (info "status: ~a, server: ~a, client: ~a" status server client)
-                   (k)))))))
+                    [(_ msg) (<- (uv/stream-read->bytevector ctx client))]
+                    [msg (utf8->string msg)])
+                   (if (string=? "PING" msg)
+                     (let/async ([n (<- (uv/stream-write ctx client "PONG"))])
+                                (uv/close-stream client))
+                     (uv/close-stream client))))))))
 
 (listen)
