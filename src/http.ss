@@ -9,6 +9,40 @@
   (define-record-type http-response
     (fields headers body status version code))
 
+  (define (uv/serve-http stream)
+    (lambda (on-done)
+      (serve-http (uv/make-reader stream (lambda (b) (uv/stream-read stream b)))
+                  (lambda (s) (uv/stream-write stream s))
+                  on-done)))
+
+  (define (uv/read-http-response reader)
+    (lambda (k)
+      (read-headers reader
+                    (lambda (headers)
+                      (if (pair? headers)
+                          (let* ([status (parse-status (car headers))]
+                                 [headers (parse-headers (cdr headers))]
+                                 [content-length (header->number headers "Content-Length")])
+                            (if content-length
+                                (if (= 0 content-length)
+                                    (k (list status headers #f))
+                                    (begin
+                                      (uv/read-fully reader content-length
+                                                     (lambda (body)
+                                                       (k (list status headers body))))))
+                                (k (list status headers #t))))
+                          (error 'eof "read to end of line"))))))
+
+  (define (header-value headers key)
+    (let ([v (assoc key headers)])
+      (if v
+          (cadr v)
+          #f)))
+
+  (define (header->number headers key)
+    (let ([v (header-value headers key)])
+      (if v (string->number v) v)))
+
   (define (uv/read-http-request reader)
     (lambda (k)
       (read-headers reader
@@ -110,5 +144,4 @@
 
  (define (parse-status status-line)
    (let ([status (string-split (utf8->string status-line) #\space)])
-     (list (car status) (string->number (cadr status)) (caddr status))))
-  )
+     (list (car status) (string->number (cadr status)) (caddr status)))))

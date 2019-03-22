@@ -8,6 +8,8 @@
    dec
    memcpy
    memcpy2
+   memset
+   trim-newline!
    find-char-by
    find-not-char
    find-in-bytevector
@@ -15,6 +17,7 @@
    truncate-bytevector!
    string-split
    from-c-string
+   alloc-zero
    find-char)
 
   (import (chezscheme))
@@ -70,11 +73,22 @@
             (f (bytevector-u8-ref bv i) i)
             (loop (+ i 1)))))))
 
+  (define trim-newline!
+    (lambda (bv num-read)
+      (truncate-bytevector! bv
+                            (if (= 13 (bytevector-u8-ref bv (- num-read 2)))
+                                (- num-read 2) (- num-read 1)))))
   (define (inc x)
     (+ x 1))
 
   (define (dec x)
     (- x 1))
+
+  (define alloc-zero
+    (lambda (size)
+      (let ([p (foreign-alloc size)])
+        (memset p 0 size)
+        p)))
 
   (define memcpy
     ;; u8* easy conversion for bytevector
@@ -87,6 +101,11 @@
     (foreign-procedure "memcpy"
                        (void* u8* int)
                        void*))
+
+  (define memset
+    (foreign-procedure "memset"
+                       (void* int ssize_t)
+                       void))
 
   (define (find-char-by str f pos)
     (let loop ([pos pos])

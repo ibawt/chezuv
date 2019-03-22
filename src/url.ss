@@ -9,7 +9,8 @@
    url-error?
    url-error-message
    url-protocol)
-  (import (chezscheme))
+  (import (chezscheme)
+          (irregex))
 
   (define-condition-type &url-error &condition make-url-error
     url-error?
@@ -23,15 +24,15 @@
     '((http 80)
       (https 443)))
 
-  (define (uv/string->url u)
-    (let ([m (irregex-search url-regex u)])
+  (define (uv/string->url s)
+    (let ([m (irregex-search url-regex s)])
       (if m
           (let ([proto (string->symbol (irregex-match-substring m 'protocol))])
             `((host ,(irregex-match-substring m 'host))
               (protocol ,proto)
               (port ,(or (string->number (irregex-match-substring m 'port)) (cadr (assoc proto default-ports))))
               (path ,(string-append "/" (irregex-match-substring m 'path)))))
-          #f)))
+          (raise (make-url-error "failed to match url")))))
 
   (define (uv/url-host url)
     (cadr (assoc 'host url)))

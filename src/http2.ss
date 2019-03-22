@@ -133,9 +133,7 @@
 
   (define (merge-alist old new)
     (fold-left
-     (lambda (
-
-acc item)
+     (lambda (acc item)
        (let ([other (assq (car item) new)])
          (if other
              (cons (list (car item) (cadr other)) acc)
@@ -406,7 +404,6 @@ acc item)
 
   (define (h2-handler-priority session frame)
     #t)
-
 
   (define (h2-handler-rst-stream session frame)
     #t)

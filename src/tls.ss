@@ -1,6 +1,5 @@
 (library (tls)
-  (export
-   )
+  (export)
   (import (chezscheme)
           (openssl))
 

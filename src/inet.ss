@@ -16,7 +16,7 @@
 
   (define init
     (case (machine-type)
-      ((ta6le) (load-shared-object "libc.so.6"))))
+      ((ta6le a6le) (load-shared-object "libc.so.6"))))
 
   (define AF_INET 2)
   (define SOCK_STREAM 1)

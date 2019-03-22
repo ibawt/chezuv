@@ -1,84 +1,90 @@
 (library (libuv)
-  (export uv-buf
-          alloc-zero
-          UV_EOF
-          UV_UNKNOWN_HANDLE
-          UV_ASYNC
-          UV_CHECK
-          UV_FS_EVENT
-          UV_FS_POLL
-          UV_HANDLE
-          UV_IDLE
-          UV_NAMED_PIPE
-          UV_POLL
-          UV_PREPARE
-          UV_PROCESS
-          UV_STREAM
-          UV_TCP
-          UV_TIMER
-          UV_TTY
-          UV_UDP
-          UV_SIGNAL
-          UV_FILE
-          UV_HANDLE_TYPE_MAX
-          UV_UNKNOWN_REQ
-          UV_REQ
-          UV_CONNECT
-          UV_WRITE
-          UV_SHUTDOWN
-          UV_WORK
-          UV_GETADDRINFO
-          SIGHUP
-          SIGINT
-          SIGTERM
-          uv-loop-set-data
-          uv-loop-get-data
-          uvloop-size
-          uv-handle-get-type
-          uv-handle-type-name
-          uv-signal-init
-          uv-signal-start-one-shot
-          uv-signal-stop
-          close-all-handles
-          uvloop-init
-          uvloop-create
-          uvloop-close
-          uv-run
-          uvloop-destroy
-          uv-stop
-          uv-idle-init
-          uv-walk
-          uv-req-size
-          uv-getaddrinfo
-          uv-freeaddrinfo
-          uv-handle-size
-          uv-idle-start
-          uv-idle-stop
-          uv-read-start
-          uv-write
-          uv-read-stop
-          uv-close
-          uv-is-closing
-          uv-err-name
-          uv-shutdown
-          uv-tcp-init
-          uv-tcp-connect
-          strerror_r
-          uv-tcp-bind
-          handle-close
-          uv-async-init
-          uv-async-send
-          uv-timer-init
-          uv-timer-start
-          uv-timer-stop
-          uv-timer-again
-          uv-queue-work
-          uv-error?
-          uv-listen
-          uv-accept
-          uv-ip4-addr)
+  (export
+   ;; from uv.h
+   uv-buf
+   UV_EOF
+   UV_UNKNOWN_HANDLE
+   UV_ASYNC
+   UV_CHECK
+   UV_FS_EVENT
+   UV_FS_POLL
+   UV_HANDLE
+   UV_IDLE
+   UV_NAMED_PIPE
+   UV_POLL
+   UV_PREPARE
+   UV_PROCESS
+   UV_STREAM
+   UV_TCP
+   UV_TIMER
+   UV_TTY
+   UV_UDP
+   UV_SIGNAL
+   UV_FILE
+   UV_HANDLE_TYPE_MAX
+   UV_UNKNOWN_REQ
+   UV_REQ
+   UV_CONNECT
+   UV_WRITE
+   UV_SHUTDOWN
+   UV_WORK
+   UV_GETADDRINFO
+   SIGHUP
+   SIGINT
+   SIGTERM
+   uv-loop-set-data
+   uv-loop-get-data
+   uv-handle-get-type
+   uv-handle-type-name
+   uv-signal-init
+   uv-signal-start-one-shot
+   uv-signal-stop
+   uv-loop-init
+   uv-loop-close
+   uv-run
+   uv-loop-destroy
+   uv-stop
+   uv-idle-init
+   uv-walk
+   uv-req-size
+   uv-getaddrinfo
+   uv-freeaddrinfo
+   uv-handle-size
+   uv-idle-start
+   uv-idle-stop
+   uv-read-start
+   uv-write
+   uv-read-stop
+   uv-close
+   uv-is-closing
+   uv-err-name
+   uv-shutdown
+   uv-tcp-init
+   uv-tcp-connect
+   uv-tcp-bind
+   uv-async-init
+   uv-async-send
+   uv-timer-init
+   uv-timer-start
+   uv-timer-stop
+   uv-timer-again
+   uv-listen
+   uv-accept
+   uv-ip4-addr
+
+   ;; helpers
+   make-uv-loop
+   uv-error?
+   make-uv-loop
+   close-handle
+   strerror_r
+   alloc-zero
+   close-all-handles
+   make-req
+   make-handler)
   (import (chezscheme)
-          (inet))
+          (inet)
+          (utils))
 
   (define init
     (case (machine-type)
@@ -126,12 +132,16 @@
   (define SIGINT 2)
   (define SIGTERM 15)
 
-  (define memset
-    (foreign-procedure "memset"
-                       (void* int size_t)
-                       void))
+  (define (handle-type-name handle)
+    (uv-handle-type-name (uv-handle-get-type handle)))
 
-  (define uvloop-size
+  (define (make-req t)
+    (alloc-zero (uv-req-size t)))
+
+  (define (make-handler t)
+    (alloc-zero (uv-handle-size t)))
+
+  (define uv-loop-size
     (foreign-procedure "uv_loop_size"
                        ()
                        int))
@@ -160,22 +170,12 @@
                        (void*)
                        int))
 
-  (define (close-all-handles uv-loop)
-    (walk-handles uv-loop
-                  (lambda (handle arg)
-                    (handle-close handle (lambda (x) #f)))))
-  (define uvloop-init
+  (define uv-loop-init
     (foreign-procedure "uv_loop_init"
                        (void*)
                        int))
 
-  (define uvloop-create
-    (lambda ()
-      (let ((l (alloc-zero (uvloop-size))))
-        (uvloop-init l)
-        l)))
-
-  (define uvloop-close
+  (define uv-loop-close
     (foreign-procedure "uv_loop_close"
                        (void*)
                        int))
@@ -194,10 +194,6 @@
     (foreign-procedure "uv_loop_get_data"
                        (void*)
                        void*))
-
-  (define (uvloop-destroy uv)
-    (uvloop-close uv)
-    (foreign-free uv))
 
   (define uv-stop
     (foreign-procedure "uv_stop"
@@ -347,10 +343,14 @@
                        (void*)
                        int))
 
-  (define uv-queue-work
-    (foreign-procedure "uv_queue_work"
-                       (void* void* void* void*)
-                       int))
+  (define (uv-loop-destroy uv)
+    (uv-loop-close uv)
+    (foreign-free uv))
+
+  (define (make-uv-loop)
+    (let ((l (alloc-zero (uv-loop-size))))
+      (uv-loop-init l)
+      l))
 
   (define (walk-handles uv-loop on-handle)
     (let ([code (foreign-callable on-handle (void* void*) void)])
@@ -358,7 +358,12 @@
       (uv-walk uv-loop (foreign-callable-entry-point code) 0)
       (unlock-object code)))
 
-  (define (handle-close h cb)
+  (define (close-all-handles uv-loop)
+    (walk-handles uv-loop
+                  (lambda (handle arg)
+                    (close-handle handle (lambda (x) #f)))))
+
+  (define (close-handle h cb)
     (if (= 0 (uv-is-closing h))
       (letrec ([code (foreign-callable
                       (lambda (h)
@@ -370,10 +375,4 @@
 
         (lock-object code)
         (uv-close h (foreign-callable-entry-point code)))
-      (cb h)))
-
-  (define alloc-zero
-    (lambda (size)
-      (let ([p (foreign-alloc size)])
-        (memset p 0 size)
-        p))))
+      (cb h))))
