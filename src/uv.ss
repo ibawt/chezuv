@@ -14,6 +14,7 @@
           uv/tcp-connect
           uv/make-idle
           uv/call-after
+          uv/ipv4->sockaddr
           <- ;; keyword for let/async
           let/async
           uv/call
@@ -197,7 +198,6 @@
                 [socket (make-handler UV_TCP)]
                 [code (foreign-callable
                        (lambda (conn status)
-                         (info "uv/tcp-connect: status: ~a" status)
                          (unlock-object code)
                          (uv-context-push-callback! uv
                                                     (lambda ()
@@ -208,10 +208,8 @@
                        (void* int)
                        void)])
         (lock-object code)
-        (info "connecting")
         (check (uv-tcp-init (uv-context-loop uv) socket))
-        (info "tcp-init")
-        (check (uv-tcp-connect conn socket addr
+        (check (uv-tcp-connect conn socket (make-ftype-pointer sockaddr (ftype-pointer-address addr))
                                (foreign-callable-entry-point code))))))
 
 
@@ -359,7 +357,6 @@
               [ex (current-exception-state)]
               [code (foreign-callable
                      (lambda (server status)
-                       (info "tcp-listen callback")
                        (uv-context-push-callback! ctx (lambda ()
                                            (current-exception-state ex)
                                            (if (= 0 status)
