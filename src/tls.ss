@@ -1,21 +1,29 @@
 (library (tls)
-  (export)
+  (export
+   tls-stream
+   tls-stream-reader
+   tls-stream-writer
+   close-tls-stream
+   make-tls-context
+   tls-accept
+   tls-connect)
   (import (chezscheme)
-          (openssl))
+          (bufferpool)
+          (uv)
+          (utils)
+          (openssl)
+          (libuv))
 
   (define-record-type tls-stream
-    (fields))
+    (fields ssl reader writer))
 
-  (define close-tls-client
-    (lambda (client)
-      (lambda (k)
-        (ssl/free-stream client)
-        (k #t))))
+  (define (close-tls-stream stream)
+    (ssl/free-stream (tls-stream-ssl stream)))
 
-  (define (ssl-output-buffer client)
+  (define (ssl-output-buffer stream)
     (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
            [base (get-buf)]
-           [n (ssl/drain-output-buffer client base buf-size)])
+           [n (ssl/drain-output-buffer stream base buf-size)])
       (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 base))
       (ftype-set! uv-buf (len) buf n)
       buf))
@@ -34,25 +42,29 @@
                (else (raise (ssl/library-error)))))
             (k n)))))
 
-  (define (ssl-drain ctx client stream k)
-    (if (positive? (ssl/num-bytes client))
-        (let ([buf (ssl-output-buffer client)])
-          ((uv/stream-write ctx stream buf)
-           (lambda (n)
-             (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
-             (k))))
-        (k)))
+  (define (ssl-drain ctx client stream)
+    (lambda (k)
+      (if (positive? (ssl/num-bytes client))
+         (let ([buf (ssl-output-buffer client)])
+           ((uv/stream-write ctx stream buf)
+            (lambda (n)
+              (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
+              (k))))
+         (k))))
 
   (define (ssl-fill ctx client stream k)
-    (uv/stream-read-raw ctx stream
-                        (lambda (nb buf)
-                          (if nb
-                              (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
-                                (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                                (if (= n nb)
-                                    (k)
-                                    (error 'check-ssl "probably need to loop but will be annoying " n))) ;; TODO: fix this I think at 16k
-                              (error 'check-ssl "failed to read bytes" nb)))))
+    (uv/stream-read ctx stream
+                    (lambda (nb buf)
+                      (if nb
+                          (let ([n (ssl/fill-input-buffer client (ftype-pointer-address (ftype-ref uv-buf (base) buf)) nb)])
+                            (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                            (if (= n nb)
+                                (k)
+                                (error 'check-ssl "probably need to loop but will be annoying " n))) ;; TODO: fix this I think at 16k
+                          (error 'check-ssl "failed to read bytes" nb)))))
+
+  (define (make-tls-context cert key client?)
+    (ssl/make-context cert key client?))
 
   (define (flush-ssl ctx client stream k)
     (ssl-drain client stream (lambda () (ssl-fill client stream k))))
@@ -64,7 +76,7 @@
   (define (make-tls-writer ctx client stream)
     (lambda (buf)
       (lambda (k)
-        (let ([buf (if (string? buf) (string->buf buf) buf)])
+        (let ([buf (if (string? buf) (string->uv-buf buf) buf)])
           ((check-ssl client stream (lambda ()
                                       (ssl/write client
                                                  (ftype-pointer-address (ftype-ref uv-buf (base) buf))
@@ -82,7 +94,6 @@
                          (lambda (n)
                            (let ([bv (make-bytevector n)])
                              (memcpy bv buf n)
-                             (info "tls-reader: ~a bytes" n)
                              (free-buf buf)
                              (on-read stream bv))))))))
 
@@ -94,15 +105,9 @@
                             (make-tls-reader client stream)
                             (make-tls-writer client stream)))))))
 
-  (define (tls-accept ctx stream)
-    (let ([client (ssl/make-stream ctx #f)])
+  (define (tls-accept uv-ctx ssl-ctx stream)
+    (let ([client (ssl/make-stream ssl-ctx #f)])
       (lambda (k)
         (let/async ([n (<- (check-ssl client stream (lambda () (ssl/accept client))))]
                     [n (<- (check-ssl client stream (lambda () (ssl/do-handshake client))))])
-                   (k (list client
-                            (make-tls-reader client stream)
-                            (make-tls-writer client stream)))))))
-
-
-
-  )
+                   (k (make-tls-stream client (make-tls-reader client stream) (make-tls-writer client stream))))))))

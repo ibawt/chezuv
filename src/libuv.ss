@@ -73,6 +73,7 @@
    uv-ip4-addr
 
    ;; helpers
+   string->uv-buf
    make-uv-loop
    uv-error?
    make-uv-loop
@@ -82,8 +83,10 @@
    close-all-handles
    make-req
    make-handler)
+
   (import (chezscheme)
           (inet)
+          (bufferpool)
           (utils))
 
   (define init
@@ -342,6 +345,18 @@
     (foreign-procedure "uv_timer_again"
                        (void*)
                        int))
+
+  (define (string->uv-buf s)
+    (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
+           [bytes (string->utf8 s)]
+           [b (get-buf)])
+      (bytevector-for-each
+       (lambda (x i)
+         (foreign-set! 'unsigned-8 b i x))
+       bytes)
+      (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 b))
+      (ftype-set! uv-buf (len) buf (bytevector-length bytes))
+      buf))
 
   (define (uv-loop-destroy uv)
     (uv-loop-close uv)

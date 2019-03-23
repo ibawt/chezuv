@@ -4,7 +4,7 @@
         (log)
         (utils)
         (url)
-        (openssl)
+        (tls)
         (uv))
 
 (define (my-simple-runner)
@@ -178,26 +178,45 @@
     (let ([splits (string-split "0.0.0.0:4343" #\:)])
       (test-equal '("0.0.0.0" "4343") splits))))
 
+(define-syntax define-async-test
+  (syntax-rules ()
+      ((_ name (ctx done) body ...)
+       (describe 'name
+                 (test-assert (call/cc
+                   (lambda (done)
+                     (uv/with-context ctx
+                                      body ...))))))))
 
-(describe "simple ping pong"
-  (let ([n (call/cc (lambda (k)
-                      (uv/call-with-context
-                       (lambda (ctx)
-                         (let/async ([(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
-                                     [(_ msg) (<- (uv/stream-read->bytevector ctx client))]
-                                     [msg (utf8->string msg)])
-                                    (if (string=? "PING" msg)
-                                        (let/async ([n (<- (uv/stream-write ctx client "PONG"))])
-                                                   (uv/close-stream client)
-                                                   (k #t))
-                                        (begin
-                                          (uv/close-stream client)
-                                          (k #f))))
+(define-async-test simple-ping-pong (ctx done)
+  (let/async ([(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
+              [(_ msg) (<- (uv/stream-read->bytevector ctx client))]
+              [msg (utf8->string msg)])
+             (if (string=? "PING" msg)
+                 (let/async ([n (<- (uv/stream-write ctx client "PONG"))])
+                            (uv/close-stream client)
+                            (uv/close-handle server (lambda (_) (info "closed")))
+                            (test-assert #t)
+                            (done #t))
+                 (begin
+                   (uv/close-stream client)
+                   (uv/close-handle server (lambda (_) (info "closed")))
+                   (test-assert #f))))
+  (let/async ([addr (uv/ipv4->sockaddr "127.0.0.1:8181")]
+              [socket (<- (uv/tcp-connect ctx addr))]
+              [n (<- (uv/stream-write ctx socket "PING"))]
+              [(_ msg) (<- (uv/stream-read->bytevector ctx socket))])
+             (it "should get PONG back"
+                 (test-equal "PONG" (utf8->string msg))
+                 )))
 
-                         (let/async ([addr (uv/ipv4->sockaddr "127.0.0.1:8181")]
-                                     [socket (<- (uv/tcp-connect ctx addr))]
-                                     [n (<- (uv/stream-write ctx socket "PING"))])
-                                    #f)))))]) (test-assert n)))
+(define-async-test tls-ping-pong (ctx done)
+  (let ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #f)])
+    (let/async ([(status server socket) (<- (uv/tcp-listen ctx "127.0.0.1:9191"))]
+                [stream (<- (tls-accept ctx tls-ctx socket))]
+                [buf (make-bytevector 2048)]
+                [n (<- ((tls-stream-reader stream) buf 2048))])
+               (info "got ~a bytes" n)
+               (done #t))))
 
 (test-end "chezuv")
 

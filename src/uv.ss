@@ -7,6 +7,7 @@
           uv/stop
           uv/make-reader
           uv/close-stream
+          uv/close-handle
           uv/tcp-listen
           uv/stream-write
           uv/stream-read
@@ -21,6 +22,7 @@
           uv/getaddrinfo)
   (import (chezscheme)
           (inet)
+          (bufferpool)
           (hpack)
           (utils)
           (log)
@@ -65,19 +67,6 @@
                              (strerror (abs err)))])
              (raise (make-uv-error err errstr))))))))
 
-  (define buf-pool '())
-  (define buf-size 65535)
-
-  (define (get-buf)
-    (if (null? buf-pool)
-        (foreign-alloc buf-size)
-        (let ([x (car buf-pool)])
-          (set! buf-pool (cdr buf-pool))
-          x)))
-
-  (define (free-buf buf)
-    (set! buf-pool (cons buf buf-pool)))
-
   (define strerror
     (lambda (x)
       (let* ([buf (make-bytevector 2048)]
@@ -112,18 +101,6 @@
                    void)])
        (lock-object alloc)
        alloc)))
-
-  (define (string->buf s)
-    (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
-           [bytes (string->utf8 s)]
-           [b (get-buf)])
-      (bytevector-for-each
-       (lambda (x i)
-         (foreign-set! 'unsigned-8 b i x))
-       bytes)
-      (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 b))
-      (ftype-set! uv-buf (len) buf (bytevector-length bytes))
-      buf))
 
   (define uv/close-handle close-handle)
 
@@ -235,7 +212,7 @@
 
   (define (uv/stream-write ctx stream s)
      (lambda (k)
-       (letrec ([buf (if (string? s) (string->buf s) s)]
+       (letrec ([buf (if (string? s) (string->uv-buf s) s)]
                 [write-req (make-req UV_WRITE)]
                 [ex (current-exception-state)]
                 [code (foreign-callable
@@ -302,19 +279,20 @@
               (set! buf #f))
 
             (on-read bv len))))
-    (lambda (bv start len on-read)
-      (if buf
-          (begin
-            (send-buf bv start len on-read))
-          (begin
-            (reader (lambda (s b)
-                     (if s
-                         (begin
-                           (set! buf b)
-                           (set! read-pos 0)
-                           (set! buf-len (bytevector-length b))
-                           (send-buf bv start len on-read))
-                         (on-read #f #f))))))))
+    (lambda (bv start len)
+      (lambda (k)
+        (if buf
+            (begin
+              (send-buf bv start len k))
+            (begin
+              (reader (lambda (s b)
+                        (if s
+                            (begin
+                              (set! buf b)
+                              (set! read-pos 0)
+                              (set! buf-len (bytevector-length b))
+                              (send-buf bv start len k))
+                            (k #f #f)))))))))
 
 
   (define (uv/read-fully reader n on-done)
