@@ -320,7 +320,7 @@
     (let* ([split (string-split addr #\:)]
            [ip (if (pair? split) (car split) addr)]
            [port (if (pair? split) (string->number (cadr split)) 0)]
-           [s (make-ftype-pointer sockaddr_in (foreign-alloc (ftype-sizeof sockaddr_in)))]
+           [s (make-ftype-pointer sockaddr_in (malloc-gc (ftype-sizeof sockaddr_in)))]
            [r (uv-ip4-addr ip port s)])
       (if (= 0 r)
           s
@@ -341,7 +341,7 @@
                                                (let ([client (make-handler UV_TCP)])
                                                  (check (uv-tcp-init (uv-context-loop ctx) client))
                                                  (check (uv-accept server client))
-                                                 (k #f server client))
+                                                 (k status server client))
                                                (k status server #f)))))
                      (void* int)
                      void)])
@@ -391,4 +391,21 @@
       (lock-object code)
       (check (uv-timer-init (uv-context-loop ctx)  a))
       (check (uv-timer-start a (foreign-callable-entry-point code) timeout repeat))))
+
+  (define malloc-gc)
+  (let ([malloc-guardian (make-guardian)])
+    (set! malloc-gc
+          (lambda (size)
+            (let ([m (foreign-alloc size)])
+              (malloc-guardian m)
+              m)))
+    (collect-request-handler
+     (lambda ()
+       (collect)
+       (let f ()
+         (let ([m (malloc-guardian)])
+           (when m
+             (foreign-free m)
+             (f)))))))
+
   )

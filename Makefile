@@ -22,3 +22,6 @@ test/fixtures/nginx/cert.pem: test/fixtures/nginx/key.pem
 
 clean:
 	@rm -f *.so *.html *.svg fixtures/nginx/cert.pem fixtures/nginx/key.pem
+
+eztest:
+	@$(RUN_SCHEME) ./test/eztest.ss
