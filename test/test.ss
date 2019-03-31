@@ -13,11 +13,6 @@
         (num-passed 0)
         (num-failed 0))
 
-    ;; (test-runner-on-group-begin! runner
-    ;;                                   (lambda (runner suite-name count)
-    ;;                                     (when count
-    ;;                                         (format #t "[~a] " count))
-    ;;                                     (format #t "Test Group ~a\n" suite-name)))
     (test-runner-on-test-end! runner
                               (lambda (runner)
                                 (let ([result
