@@ -2,8 +2,8 @@
 (import
   (rnrs)
   (rnrs mutable-pairs)
-  (surfage s48 intermediate-format-strings)
-  (surfage s78 lightweight-testing))
+  (srfi :48 intermediate-format-strings)
+  (srfi :78 lightweight-testing))
 
 #;(define (format-lots n f fmt-str . args)
   (let loop ([i 0] [r #f])

@@ -1,5 +1,8 @@
+#!r6rs
 ; Test suite for SRFI-1
 ; 2003-12-29 / lth
+;
+; $Id: srfi-1-test.sps 5842 2008-12-11 23:04:51Z will $
 ;
 ; Note: In Larceny, we require that the procedures designated as
 ; "linear update" variants in the spec (eg append!) side-effect their
@@ -11,10 +14,11 @@
 ; that the cells of the results are the cells of the input with only
 ; the CDR changed, ie, values are never moved from one cell to another.
 
-(import (except (rnrs base) map for-each)
+(import (except (rnrs base) error map for-each)
         (rnrs io simple)
         (rnrs r5rs)
-        (surfage s1 lists))
+        (srfi :1 lists)
+        (srfi :23 error))
 
 (define (writeln . xs)
   (for-each display xs)
@@ -43,7 +47,7 @@
 
 (or (equal? (list-tabulate 5 (lambda (x) x)) '(0 1 2 3 4))
     (fail 'list-tabulate:1))
-(or (equal? (list-tabulate 0 (lambda (x) (error #f "FOO!"))) '())
+(or (equal? (list-tabulate 0 (lambda (x) (error "FOO!"))) '())
     (fail 'list-tabluate:2))
 
 (or (call-with-current-continuation

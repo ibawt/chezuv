@@ -1,20 +1,12 @@
 ;; -*- geiser-scheme-implementation: chez -*-
 (import (chezscheme)
-        (eztest)
+        (srfi :64 testing)
         (log)
         (utils)
         (url)
         (tls)
+        (ansi)
         (uv))
-
-;; (define-record-type test2
-;;   (fields test-function message expected (mutable actual) skipped? only?))
-
-;; (define-record-type test2-group
-;;   (fields name children))
-
-;; (define (describe name body-fn done)
-;;   )
 
 (define (my-simple-runner)
   (let ((runner (test-runner-simple))
@@ -23,17 +15,24 @@
 
     (test-runner-on-group-begin! runner
                                       (lambda (runner suite-name count)
-                                        (format #t "[~a] Test ~a\n" count suite-name)))
+                                        (when count
+                                            (format #t "[~a] " count))
+                                        (format #t "Test Group ~a\n" suite-name)))
     (test-runner-on-test-end! runner
                               (lambda (runner)
-                                (case (test-result-kind runner)
-                                  ((pass xpass) (set! num-passed (+ num-passed 1)))
-                                  ((fail xfail) (begin
-                                                  (format #t "[FAILED] ~{~a~^ | ~}\n\tExpected: ~a\n\tActual: ~a\n"  (reverse (test-runner-group-stack runner))
-                                                          (test-result-ref runner 'expected-value)
-                                                          (test-result-ref runner 'actual-value)))
-                                                  (set! num-failed (+ num-failed 1)))
-                                  (else #t))))
+                                (let ([result
+                                       (case (test-result-kind runner)
+                                         ((pass xpass) (begin
+                                                         (set! num-passed (+ num-passed 1))
+                                                         (color green "PASS")))
+                                         ((fail xfail)
+                                          (begin
+                                            (set! num-failed (+ num-failed 1))
+                                            (color red "FAIL")))
+                                         (else (error 'unknown-result-kind (test-result-kind runner))))])
+                                  (format #t "[~a] Expected: ~a, Actual: ~a == ~a\n" result (test-result-ref runner 'expected-value)
+                                          (test-result-ref runner 'actual-value)
+                                          (test-result-ref runner 'source-form)))))
     (test-runner-on-final! runner
                            (lambda (runner)
                              (format #t "Passing tests: ~d.~%Failing tests: ~d.~%"
@@ -50,9 +49,7 @@
   (syntax-rules ()
     ((_ s body ...)
      (begin
-       (test-begin s)
-       body ...
-       (test-end s)))))
+       (test-group s body ...)))))
 
 (define-syntax describe
   (syntax-rules ()
@@ -194,7 +191,7 @@
   (syntax-rules ()
       ((_ name (ctx done) body ...)
        (describe 'name
-                 (test-assert (call/cc
+                 (test-assert 'name (call/cc
                    (lambda (done)
                      (uv/with-context ctx
                                       body ...))))))))
@@ -223,36 +220,28 @@
 (define-async-test tls-ping-pong (ctx done)
   (let ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #f)])
     (let/async ([(status server socket) (<- (uv/tcp-listen ctx "127.0.0.1:9191"))]
-                [_ (info "status: ~a, server: ~a, socket: ~a" status server socket)]
                 [stream (<- (tls-accept ctx tls-ctx socket))]
-                [_ (info "stream is: ~a" stream)]
                 [buf (make-bytevector 2048)]
                 [(bv n) (<- ((tls-stream-reader stream) buf 0 2048))]
                 [msg (utf8->string (truncate-bytevector! bv n))])
                (if (string=? "PING" msg)
                    (let/async ([n (<- ((tls-stream-writer stream) "PONG"))])
-                              (info "after written pong")
                               (close-tls-stream stream)
                               (uv/close-stream socket)
                               (uv/close-handle server (lambda (_) (info "closed")))
-                              (test-assert #t)
-                              (info "do we get here?")
+                              (test-assert "got the string PING and sent PONG" #t)
                               (done #t))
                    (begin
-                     (info "in here?")
                      (uv/close-stream socket)
                      (uv/close-handle server (lambda (_) (info "closed")))
                      (test-assert "didn't get a ping" #f)))))
   (let ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #t)])
     (let/async ([socket (<- (uv/tcp-connect ctx (uv/ipv4->sockaddr "127.0.0.1:9191")))]
-                [_ (info "client socket is: ~a" socket)]
                 [stream (<- (tls-connect ctx tls-ctx socket))]
-                [_ (info "tls-accepted")]
                 [n (<- ((tls-stream-writer stream) "PING"))]
                 [buf (make-bytevector 2048)]
                 [(bv n) (<- ((tls-stream-reader stream) buf 0 2048))]
                 [msg (utf8->string (truncate-bytevector! bv n))])
-               (info "tls client got: ~a" msg)
                (test-equal "PONG" msg)
                (close-tls-stream stream)
                (uv/close-stream socket)

@@ -1,3 +1,4 @@
+#!r6rs
 ; Test suite for SRFI 43
 ;
 ; $Id: srfi-43-test.sps 6152 2009-03-19 22:30:05Z will $
@@ -10,8 +11,8 @@
                 vector-for-each)
         (rnrs lists)
         (rnrs io simple)
-        (surfage s6 basic-string-ports)
-        (surfage s43 vectors))
+        (srfi :6 basic-string-ports)
+        (srfi :43 vectors))
 
 (define (writeln . xs)
   (for-each display xs)

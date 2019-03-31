@@ -1,13 +1,11 @@
-;; Copyright (c) 2009 Derick Eddington.  All rights reserved.  Licensed under an
-;; MIT-style license.  My license is in the file named LICENSE from the original
-;; collection this file is distributed with.  If this file is redistributed with
-;; some other collection, my license must also be included.
-
 #!r6rs
+;; Copyright 2009 Derick Eddington.  My MIT-style license is in the file named
+;; LICENSE from the original collection this file is distributed with.
+
 (import
   (rename (rnrs) (for-all andmap))
-  (surfage s78 lightweight-testing)
-  (surfage s98 os-environment-variables))
+  (srfi :78 lightweight-testing)
+  (srfi :98 os-environment-variables))
 
 (check (list? (get-environment-variables))
        => #T)

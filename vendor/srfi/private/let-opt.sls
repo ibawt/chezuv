@@ -37,7 +37,7 @@
   (export
     let-optionals* :optional)
   (import
-    (rnrs))
+    (rename (except (rnrs) error) (assertion-violation error)))
 
 ;;; (:optional rest-arg default-exp [test-pred])
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -82,8 +82,7 @@
   (syntax-rules ()
     ((let-optionals* arg (opt-clause ...) body ...)
      (let ((rest arg))
-       (%let-optionals* rest (opt-clause ...) 
-			(let () body ...))))))
+       (%let-optionals* rest (opt-clause ...) body ...)))))
 
 ;;; The arg-list expression *must* be a variable.
 ;;; (Or must be side-effect-free, in any event.)
