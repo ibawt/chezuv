@@ -97,7 +97,6 @@
   (define (ssl/clear-errors)
     (let lp ([n (err-get-error)]
              [x 0])
-      (info "clear-errors n = ~a" n)
       (unless (= 0 n)
         (lp (err-get-error)
             (+ 1 x)))))
