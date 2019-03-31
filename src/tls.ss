@@ -15,11 +15,17 @@
           (openssl)
           (libuv))
 
+  ;; Glue between (uv) and (openssl)
   (define-record-type tls-stream
     (fields ssl reader writer))
 
-  (define (close-tls-stream stream)
-    (ssl/free-stream (tls-stream-ssl stream)))
+  (define (close-tls-stream ctx stream socket)
+    (lambda (k)
+      (let/async ([n (<- (check-ssl ctx (tls-stream-ssl stream) socket
+                                    (lambda ()
+                                      (ssl/shutdown (tls-stream-ssl stream)))))])
+                 (ssl/free-stream (tls-stream-ssl stream))
+                 (k n))))
 
   (define (ssl-output-buffer stream)
     (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
@@ -35,23 +41,26 @@
   (define (check-ssl ctx client stream f)
     (lambda (k)
       (let lp ([n (f)])
+        (info "check-ssl: n = ~a" n)
         (if (ssl/error? n)
             (let ([e (ssl/get-error client n)])
+              (info "e = ~a" e)
               ;; TODO: why do I not get any other type of error
               (cond
-               ((= e ssl-error-want-read) (flush-ssl ctx client stream (lambda () (lp (f)))))
+               ((= e ssl-error-want-read)
+                (flush-ssl ctx client stream (lambda () (lp (f)))))
                (else (raise (ssl/library-error)))))
             (k n)))))
 
   (define (ssl-drain ctx client stream)
     (lambda (k)
       (if (positive? (ssl/num-bytes client))
-         (let ([buf (ssl-output-buffer client)])
-           ((uv/stream-write ctx stream buf)
-            (lambda (n)
-              (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
-              (k))))
-         (k))))
+          (let ([buf (ssl-output-buffer client)])
+            ((uv/stream-write ctx stream buf)
+             (lambda (n)
+               (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
+               (k))))
+          (k))))
 
   (define (ssl-fill ctx client stream k)
     (let/async ([(nb buf) (<- (uv/stream-read ctx stream))])
@@ -60,8 +69,12 @@
             (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
             (if (= n nb)
                 (k)
-                (error 'check-ssl "probably need to loop but will be annoying " n))) ;; TODO: fix this I think at 16k
-          (error 'check-ssl "failed to read bytes" nb))))
+                (begin
+                  (info "ERROR")
+                  (error 'check-ssl "probably need to loop but will be annoying " n)))) ;; TODO: fix this I think at 16k
+          (begin
+            (info "ERRORz")
+            (error 'check-ssl "failed to read bytes" nb)))))
 
   (define (make-tls-context cert key client?)
     (ssl/make-context cert key client?))
@@ -75,28 +88,23 @@
       ((check-ssl ctx tls stream (lambda () (ssl/shutdown tls))) k)))
 
   (define (make-tls-writer ctx client stream)
-    (lambda (buf)
+    (lambda (sbuf)
       (lambda (k)
-        (let ([buf (if (string? buf) (string->uv-buf buf) buf)])
+        (let ([buf (if (string? sbuf) (string->uv-buf sbuf) sbuf)])
           ((check-ssl ctx client stream (lambda ()
-                                      (ssl/write client
-                                                 (ftype-pointer-address (ftype-ref uv-buf (base) buf))
-                                                 (ftype-ref uv-buf (len) buf))))
-           (lambda (n)
-             (flush-ssl ctx client stream (lambda () (k n)))))))))
+                                          (ssl/write client
+                                                     (ftype-pointer-address (ftype-ref uv-buf (base) buf))
+                                                     (ftype-ref uv-buf (len) buf)))) k)))))
 
   (define (make-tls-reader ctx client stream)
     (uv/make-reader stream
         (lambda (on-read)
-          (info "tls-reader")
           (let ([buf (get-buf)])
             ((check-ssl ctx client stream
                         (lambda ()
-                          (info "ssl/read")
                           (ssl/read client buf buf-size)))
               (lambda (n)
                 (let ([bv (make-bytevector n)])
-                  (info "got some data in tls reader")
                   (memcpy bv buf n)
                   (free-buf buf)
                   (on-read stream bv))))))))

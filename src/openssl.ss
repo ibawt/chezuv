@@ -97,6 +97,7 @@
   (define (ssl/clear-errors)
     (let lp ([n (err-get-error)]
              [x 0])
+      (info "clear-errors n = ~a" n)
       (unless (= 0 n)
         (lp (err-get-error)
             (+ 1 x)))))
@@ -142,12 +143,10 @@
             bytes-read))))
 
   (define (ssl/read s buf len)
-    (let ([n (ssl-read (ssl-stream-ssl s) buf len)])
-      n))
+    (ssl-read (ssl-stream-ssl s) buf len))
 
   (define (ssl/write s buf len)
-      (let ([n (ssl-write (ssl-stream-ssl s) buf len)])
-        n))
+    (ssl-write (ssl-stream-ssl s) buf len))
 
   (define ssl/connect
     (lambda (s)
@@ -180,12 +179,11 @@
                        (int u8* int)
                        void))
 
-  (define ssl/library-error
-    (lambda ()
-      (let ([b (make-bytevector 2048)]
-            [e (err-get-error)])
-        (err-get-string-n e b (bytevector-length b))
-        (make-ssl-error e (from-c-string b)))))
+  (define (ssl/library-error)
+    (let ([b (make-bytevector 2048)]
+          [e (err-get-error)])
+      (err-get-string-n e b (bytevector-length b))
+      (make-ssl-error e (from-c-string b))))
 
   (define ssl-new
     (foreign-procedure "SSL_new"
@@ -445,7 +443,7 @@
   (define alpn-protocols
     (u8-list->bytevector (fold-left
                           (lambda (acc x)
-                            (cons (string-length x) (append (map char->integer (string->list x)) acc))) '() 
+                            (cons (string-length x) (append (map char->integer (string->list x)) acc))) '()
                             '("http/1.1" "h2"))))
 
   (define ssl-select-next-proto

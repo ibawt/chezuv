@@ -140,6 +140,7 @@
       (uv-context-pump-callbacks! ctx) ;; we call the callbacks here to avoid stale foreign contexts
       (when (positive? r)
         (lp (uv-run (uv-context-loop ctx) 1))))
+    (info "Exiting loop")
     (uv-loop-close (uv-context-loop ctx))
     (uv-loop-destroy (uv-context-loop ctx)))
 
@@ -402,10 +403,7 @@
     (collect-request-handler
      (lambda ()
        (collect)
-       (let f ()
-         (let ([m (malloc-guardian)])
-           (when m
-             (foreign-free m)
-             (f)))))))
-
-  )
+       (let f ([m (malloc-guardian)])
+         (when m
+           (foreign-free m)
+           (f (malloc-guardian))))))))

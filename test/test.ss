@@ -13,11 +13,11 @@
         (num-passed 0)
         (num-failed 0))
 
-    (test-runner-on-group-begin! runner
-                                      (lambda (runner suite-name count)
-                                        (when count
-                                            (format #t "[~a] " count))
-                                        (format #t "Test Group ~a\n" suite-name)))
+    ;; (test-runner-on-group-begin! runner
+    ;;                                   (lambda (runner suite-name count)
+    ;;                                     (when count
+    ;;                                         (format #t "[~a] " count))
+    ;;                                     (format #t "Test Group ~a\n" suite-name)))
     (test-runner-on-test-end! runner
                               (lambda (runner)
                                 (let ([result
@@ -30,7 +30,9 @@
                                             (set! num-failed (+ num-failed 1))
                                             (color red "FAIL")))
                                          (else (error 'unknown-result-kind (test-result-kind runner))))])
-                                  (format #t "[~a] Expected: ~a, Actual: ~a == ~a\n" result (test-result-ref runner 'expected-value)
+                                  (format #t "[~a] ~a Expected: ~a, Actual: ~a == ~a\n" result
+                                          (test-runner-test-name runner)
+                                          (test-result-ref runner 'expected-value)
                                           (test-result-ref runner 'actual-value)
                                           (test-result-ref runner 'source-form)))))
     (test-runner-on-final! runner
@@ -191,10 +193,10 @@
   (syntax-rules ()
       ((_ name (ctx done) body ...)
        (describe 'name
-                 (test-assert 'name (call/cc
+                 (call/cc
                    (lambda (done)
                      (uv/with-context ctx
-                                      body ...))))))))
+                                      body ...)))))))
 
 (define-async-test simple-ping-pong (ctx done)
   (let/async ([(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
@@ -226,7 +228,6 @@
                 [msg (utf8->string (truncate-bytevector! bv n))])
                (if (string=? "PING" msg)
                    (let/async ([n (<- ((tls-stream-writer stream) "PONG"))])
-                              (close-tls-stream stream)
                               (uv/close-stream socket)
                               (uv/close-handle server (lambda (_) (info "closed")))
                               (test-assert "got the string PING and sent PONG" #t)
@@ -234,20 +235,21 @@
                    (begin
                      (uv/close-stream socket)
                      (uv/close-handle server (lambda (_) (info "closed")))
-                     (test-assert "didn't get a ping" #f)))))
+                     (test-assert "didn't get a ping" #f)
+                     (done #f)))))
   (let ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #t)])
     (let/async ([socket (<- (uv/tcp-connect ctx (uv/ipv4->sockaddr "127.0.0.1:9191")))]
                 [stream (<- (tls-connect ctx tls-ctx socket))]
                 [n (<- ((tls-stream-writer stream) "PING"))]
                 [buf (make-bytevector 2048)]
                 [(bv n) (<- ((tls-stream-reader stream) buf 0 2048))]
-                [msg (utf8->string (truncate-bytevector! bv n))])
-               (test-equal "PONG" msg)
-               (close-tls-stream stream)
-               (uv/close-stream socket)
-               #t))
+                [msg (utf8->string (truncate-bytevector! bv n))]
+                [n (<- (close-tls-stream ctx stream socket))])
+               (test-equal "client got PONG" "PONG" msg)
+               (uv/close-stream socket)))
 
   )
 
 (test-end "chezuv")
+
 
