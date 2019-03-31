@@ -9,8 +9,7 @@ test: test/fixtures/nginx/cert.pem
 	@$(SCHEME) --libdirs $(SCHEME_LIB_DIRS) --debug-on-exception --program ./test/test.ss
 
 docker_image:
-  @docker rmi chezuv:testing
-	@docker build ./ -f test/Dockerfile -t chezuv:testing
+	@docker build ./ -f test/Dockerfile -t chezuv
 
 server:
 	@$(RUN_SCHEME) bin/run.ss
