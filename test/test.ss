@@ -139,12 +139,12 @@
    (let ([wg (waitgroup 3 done)])
      (it "should make a simple http request"
          (let/async ([resp (<- (http-do ctx (make-http-request "http://localhost:8080")))])
-                    (test-equal "http request" 200 (cadar resp))
+                    (test-equal "http request" 200 (http-response-code resp))
                     (wg)))
      (it "should make a simple https request (verified)"
          (let/async ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" #f #t)]
                      [resp (<- (http-do ctx (make-http-request "https://localhost:9090" tls-ctx)))])
-                    (test-equal "https request" 200 (cadar resp))
+                    (test-equal "https request" 200 (http-response-code resp))
                     (wg)))
      (it "should fail with a non verified cert"
          (let ([tls-ctx (make-tls-context)])
@@ -236,5 +236,4 @@
                (uv/close-stream socket))))
 
 (test-end "chezuv")
-
 

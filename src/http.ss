@@ -1,5 +1,10 @@
 (library (http)
   (export make-http-request
+          http-response-code
+          http-response-status
+          http-response-version
+          http-response-headers
+          http-response-body
           http-do)
   (import (chezscheme)
           (utils)
@@ -39,14 +44,15 @@
                           (let* ([status (parse-status (car headers))]
                                  [headers (parse-headers (cdr headers))]
                                  [content-length (header->number headers "Content-Length")])
+                            (info "status: ~a" status)
                             (if content-length
                                 (if (= 0 content-length)
                                     (k (list status headers #f))
                                     (begin
                                       (uv/read-fully reader content-length
                                                      (lambda (body)
-                                                       (k (list status headers body))))))
-                                (k (list status headers #t))))
+                                                       (k (make-http-response headers body (caddr status) (car status) (cadr status)))))))
+                                (k (make-http-response headers #t (caddr status) (car status) (cadr status)))))
                           (error 'eof "read to end of line"))))))
 
   (define (header-value headers key)
