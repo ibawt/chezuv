@@ -6,6 +6,7 @@
    close-tls-stream
    make-tls-context
    tls-accept
+   tls-shutdown
    tls-connect)
   (import (chezscheme)
           (bufferpool)
@@ -41,10 +42,8 @@
   (define (check-ssl ctx client stream f)
     (lambda (k)
       (let lp ([n (f)])
-        (info "check-ssl: n = ~a" n)
         (if (ssl/error? n)
             (let ([e (ssl/get-error client n)])
-              (info "e = ~a" e)
               ;; TODO: why do I not get any other type of error
               (cond
                ((= e ssl-error-want-read)
@@ -69,15 +68,15 @@
             (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
             (if (= n nb)
                 (k)
-                (begin
-                  (info "ERROR")
-                  (error 'check-ssl "probably need to loop but will be annoying " n)))) ;; TODO: fix this I think at 16k
-          (begin
-            (info "ERRORz")
-            (error 'check-ssl "failed to read bytes" nb)))))
+                (error 'check-ssl "probably need to loop but will be annoying " n))) ;; TODO: fix this I think at 16k
+          (error 'check-ssl "failed to read bytes" nb))))
 
-  (define (make-tls-context cert key client?)
-    (ssl/make-context cert key client?))
+  (define make-tls-context
+    (case-lambda 
+     ([cert key client?]
+      (ssl/make-context cert key client?))
+     ([]
+      (make-tls-context #f #f #t))))
 
   (define (flush-ssl ctx client stream k)
     ((ssl-drain ctx client stream)

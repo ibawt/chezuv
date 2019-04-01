@@ -5,6 +5,7 @@
    url-host
    url-path
    url-port
+   url?
    &url-error
    url-error?
    url-error-message

@@ -1,10 +1,26 @@
 (library (http)
-  (export)
+  (export make-http-request
+          http-do)
   (import (chezscheme)
-          (utils))
+          (utils)
+          (tls)
+          (openssl)
+          (log)
+          (url)
+          (uv))
 
-  (define-record-type http-request
-    (fields headers body method url))
+  (define-record-type (http-request %make-http-request http-request?)
+    (fields headers body method url tls-ctx))
+
+  (define make-http-request
+    (case-lambda
+     ([]
+      (error 'make-http-request "invalid arguments"))
+     ([url tls-ctx]
+      (%make-http-request '() #f "GET" (if (url? url) url (string->url url))
+                          tls-ctx))
+     ([url]
+      (make-http-request url '()))))
 
   (define-record-type http-response
     (fields headers body status version code))
@@ -93,30 +109,32 @@
                           (set! lines (cons line lines))
                           #t)))))
 
- (define (uv/make-http-request loop url)
+ ;; TODO: fold these methods
+ (define (http-do-tls ctx req)
    (lambda (k)
-     (let/async ([addr (<- (uv/getaddrinfo loop (uv/url-host url)))]
-                 [sa (addr->sockaddr addr (uv/url-port url))]
-                 [sock (<- (uv/tcp-connect loop sa))]
-                 [status (<- (uv/stream-write sock (format #f "GET / HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n\r\n" (uv/url-host url))))]
-                 [_ (info "write status: ~a" status)]
-                 [resp (<- (uv/read-http-response (uv/make-reader sock (lambda (b) (uv/stream-read sock b)))))]
-                 [_ (handle-close sock nothing)])
+     (let/async ([url (http-request-url req)]
+                 [addr (<- (uv/getaddrinfo ctx (url-host url)))]
+                 [sa (addr->sockaddr addr (url-port url))]
+                 [sock (<- (uv/tcp-connect ctx sa))]
+                 [stream (<- (tls-connect ctx (http-request-tls-ctx req) sock))]
+                 [n (<- ((tls-stream-writer stream) (format #f "GET / HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n\r\n" (url-host url))))]
+                 [resp (<- (uv/read-http-response (tls-stream-reader stream)))]
+                 [_ (uv/close-stream sock)])
                 (k resp))))
-
- (define (uv/make-https-request loop ctx url)
-   (lambda (k)
-     (let/async ([addr (<- (uv/getaddrinfo loop (uv/url-host url)))]
-                 [_ (info "https-request addr is: ~a" addr) ]
-                 [stream (<- (uv/tcp-connect loop (addr->sockaddr addr (uv/url-port url))))]
-                 [_ (info "stream is: ~a" stream)]
-                 [client (<- (tls-connect ctx stream))]
-                 [status (<- ((caddr client) (format #f "GET ~a HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\nContent-Length: 0\r\n\r\n" (uv/url-path url)
-                                                     (uv/url-host url))))]
-                 [resp (<- (uv/read-http-response (cadr client)))]
-                 [done (<- (tls-shutdown (car client) stream))])
-                (info "https-request: ~a" resp)
-                (k resp))))
+ ;; this one as well
+ (define (http-do ctx req)
+   (if (eq? 'https (url-protocol (http-request-url req)))
+       (http-do-tls ctx req)
+       (lambda (k)
+         (let/async ([url (http-request-url req)]
+                     [addr (<- (uv/getaddrinfo ctx (url-host url)))]
+                     [sa (addr->sockaddr addr (url-port url))]
+                     [sock (<- (uv/tcp-connect ctx sa))]
+                     [status (<- (uv/stream-write ctx sock (format #f "GET / HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n\r\n" (url-host url))))]
+                     [resp (<- (uv/read-http-response (uv/make-reader sock (lambda (b)
+                                                                             ((uv/stream-read->bytevector ctx sock) b)))))]
+                     [_ (uv/close-stream sock)])
+                    (k resp)))))
 
  (define (parse-headers raw)
    (define (split-header s)
@@ -134,13 +152,13 @@
    (lambda (k)
      (let/async ([tls (<- (tls-accept ctx stream))])
                 (case (ssl/get-selected-alpn (car tls))
-                  (h2 (serve-http2 (cadr tls) (caddr tls)
-                                   (lambda (ok)
-                                     (ssl/free-stream (car tls)) (k ok))))
+                  ;; (h2 (serve-http2 (cadr tls) (caddr tls)
+                  ;;                  (lambda (ok)
+                  ;;                    (ssl/free-stream (car tls)) (k ok))))
                   (http/1.1 (serve-http (cadr tls) (caddr tls)
                                         (lambda (ok)
-                                          (ssl/free-stream (car tls))
-                                          (k ok))))))))
+                                          ((close-tls-stream tls) (lambda (n)
+                                                                    (k ok))))))))))
 
  (define (parse-status status-line)
    (let ([status (string-split (utf8->string status-line) #\space)])

@@ -6,6 +6,8 @@
           uv/close
           uv/stop
           uv/make-reader
+          uv/read-fully
+          uv/read-lines
           uv/close-stream
           uv/close-handle
           uv/tcp-listen
@@ -16,6 +18,7 @@
           uv/make-idle
           uv/call-after
           uv/ipv4->sockaddr
+          addr->sockaddr
           <- ;; keyword for let/async
           let/async
           uv/call
@@ -116,13 +119,13 @@
    (foreign-free (ftype-pointer-address buf)))
 
  (define (uv/read-lines reader on-line)
-   (reader (make-bytevector 4096) 0 'eol
-           (lambda (bv num-read)
-             (if (and bv (on-line (trim-newline! bv num-read)))
-                 (begin
-                   (uv/read-lines reader on-line))
-                 (begin
-                   (on-line #f))))))
+   ((reader (make-bytevector 4096) 0 'eol)
+    (lambda (bv num-read)
+      (if (and bv (on-line (trim-newline! bv num-read)))
+          (begin
+            (uv/read-lines reader on-line))
+          (begin
+            (on-line #f))))))
 
 
   (define (uv/close uv)
@@ -297,8 +300,9 @@
 
 
   (define (uv/read-fully reader n on-done)
-    (reader (make-bytevector n) 0 n (lambda (bv len)
-                                      (on-done bv))))
+    ((reader (make-bytevector n) 0 n)
+     (lambda (bv len)
+       (on-done bv))))
 
   (define (uv/close-stream stream)
     (letrec ([shutdown-req (make-req UV_SHUTDOWN)]

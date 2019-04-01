@@ -6,7 +6,8 @@
         (url)
         (tls)
         (ansi)
-        (uv))
+        (uv)
+        (http))
 
 (define (my-simple-runner)
   (let ((runner (test-runner-simple))
@@ -58,34 +59,12 @@
     ((_ . body)
      (dynamic-wind
          (lambda ()
-           (system "nginx -c nginx.conf -p fixtures/nginx")
-           (sleep (make-time 'time-duration 10 1)))
+           (system "nginx -c nginx.conf -p test/fixtures/nginx >/dev/null 2>&1")
+           (sleep (make-time 'time-duration 50 0))
+           )
          (lambda () . body)
          (lambda ()
-           (system "nginx -c nginx.conf -s quit -p fixtures/nginx"))))))
-
-;; (define http-test-request
-;;   (lambda (url-string)
-;;     (let ([url (uv/string->url url-string)])
-;;       (call/cc
-;;        (lambda (k)
-;;          (uv/call-with-loop
-;;           (lambda (loop)
-;;             (let/async ([resp (<- (uv/make-http-request loop url))])
-;;                        (k resp)))))))))
-
-;; (define https-test-request
-;;   (lambda (url-string cert)
-;;     (let ([url (uv/string->url url-string)])
-;;       (call/cc
-;;        (lambda (k)
-;;          (ssl/call-with-context cert #f #t
-;;             (lambda (ctx)
-;;               (uv/call-with-loop
-;;                (lambda (loop)
-;;                  (let/async ([resp (<- (uv/make-https-request loop ctx url))])
-;;                             (info "https-test-request: ~a" resp)
-;;                             (k resp)))))))))))
+           (system "nginx -c nginx.conf -s quit -p test/fixtures/nginx >/dev/null 2>&1"))))))
 
 (define run-command
   (lambda (cmd)
@@ -149,19 +128,28 @@
 
 ;;         (info "resp is: ~a" resp))))
 
-;; (describe "http requests"
-;;   (with-nginx
-;;     (it "should make a simple http request"
-;;         (let ((resp (http-test-request "http://localhost:8080")))
-;;           (info "test1 done")
-;;           (test-equal 200 (cadar resp))))
-;;     (it "should make a simple https request (verified)"
-;;         (let ([resp (https-test-request "https://localhost:9090" "./fixtures/nginx/cert.pem")])
-;;           (test-equal 200 (cadar resp))))
-;;     ;; (it "should fail with a non verified cert"
-;;     ;;     (test-error #t (https-test-request "https://localhost:9090" #f))))
+(define (waitgroup n on-done)
+  (define times 0)
+  (lambda ()
+    (set! times (+ times 1))
+    (when (>= times n) (on-done))))
 
-;;   ))
+(with-nginx
+ (define-async-test client-http-requests (ctx done)
+   (let ([wg (waitgroup 3 done)])
+     (it "should make a simple http request"
+         (let/async ([resp (<- (http-do ctx (make-http-request "http://localhost:8080")))])
+                    (test-equal "http request" 200 (cadar resp))
+                    (wg)))
+     (it "should make a simple https request (verified)"
+         (let/async ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" #f #t)]
+                     [resp (<- (http-do ctx (make-http-request "https://localhost:9090" tls-ctx)))])
+                    (test-equal "https request" 200 (cadar resp))
+                    (wg)))
+     (it "should fail with a non verified cert"
+         (let ([tls-ctx (make-tls-context)])
+           (test-error #t ((http-do (make-http-request "https://localhost:9090") (lambda (resp) #f))))
+           (wg))))))
 
 (describe
  "url functions"
@@ -194,6 +182,7 @@
                                       body ...)))))))
 
 (define-async-test simple-ping-pong (ctx done)
+  (define wg (waitgroup 2 done))
   (let/async ([(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
               [(_ msg) (<- (uv/stream-read->bytevector ctx client))]
               [msg (utf8->string msg)])
@@ -202,19 +191,22 @@
                             (uv/close-stream client)
                             (uv/close-handle server (lambda (_) (info "closed")))
                             (test-assert #t)
-                            (done #t))
+                            (wg))
                  (begin
                    (uv/close-stream client)
                    (uv/close-handle server (lambda (_) (info "closed")))
-                   (test-assert #f))))
+                   (test-assert #f)
+                   (wg))))
   (let/async ([addr (uv/ipv4->sockaddr "127.0.0.1:8181")]
               [socket (<- (uv/tcp-connect ctx addr))]
               [n (<- (uv/stream-write ctx socket "PING"))]
               [(_ msg) (<- (uv/stream-read->bytevector ctx socket))])
-             (it "should get PONG back"
-                 (test-equal "PONG" (utf8->string msg)))))
+             (test-equal "should get PONG back" "PONG" (utf8->string msg))
+             (wg)))
 
 (define-async-test tls-ping-pong (ctx done)
+  ;; TODO: why does this fail with 2
+  (define wg (waitgroup 1 done))
   (let ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #f)])
     (let/async ([(status server socket) (<- (uv/tcp-listen ctx "127.0.0.1:9191"))]
                 [stream (<- (tls-accept ctx tls-ctx socket))]
@@ -226,12 +218,12 @@
                               (uv/close-stream socket)
                               (uv/close-handle server (lambda (_) (info "closed")))
                               (test-assert "got the string PING and sent PONG" #t)
-                              (done #t))
+                              (wg))
                    (begin
                      (uv/close-stream socket)
                      (uv/close-handle server (lambda (_) (info "closed")))
                      (test-assert "didn't get a ping" #f)
-                     (done #f)))))
+                     (wg)))))
   (let ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #t)])
     (let/async ([socket (<- (uv/tcp-connect ctx (uv/ipv4->sockaddr "127.0.0.1:9191")))]
                 [stream (<- (tls-connect ctx tls-ctx socket))]
@@ -241,9 +233,7 @@
                 [msg (utf8->string (truncate-bytevector! bv n))]
                 [n (<- (close-tls-stream ctx stream socket))])
                (test-equal "client got PONG" "PONG" msg)
-               (uv/close-stream socket)))
-
-  )
+               (uv/close-stream socket))))
 
 (test-end "chezuv")
 
