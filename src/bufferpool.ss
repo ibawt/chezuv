@@ -17,6 +17,5 @@
           x)))
 
   (define (free-buf buf)
-    (foreign-free buf)
-    )
+    (set! buf-pool (cons buf buf-pool)))
   )

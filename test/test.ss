@@ -100,12 +100,10 @@
               [(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
               [status (<- (serve-https ctx tls-ctx client))]
               [_ (<- (uv/close-stream ctx client))])
-             (info "do we get here")
              (uv/close-handle server wg))
   (let/async ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #t)]
               [resp (<- (http-do ctx (make-http-request "https://localhost:8181" tls-ctx)))])
              (test-equal "simple-https-server" 200 (http-response-code resp))
-             (info "how about here?")
              (wg)))
 
 (define-async-test simple-http-server (ctx done)
@@ -178,12 +176,11 @@
               [n (<- (uv/stream-write ctx socket "PING"))]
               [(n msg) (<- (uv/stream-read->bytevector ctx socket))]
               [_ (<- (uv/close-stream ctx socket))])
-             (info "~a ~a" n (utf8->string msg))
              (test-equal "should get PONG back" "PONG" (utf8->string msg))
              (wg)))
 
 (define-async-test tls-ping-pong (ctx done)
-  (define wg (waitgroup 2 (lambda () (info "exiting") (done))))
+  (define wg (waitgroup 2 done))
   (let ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #f)])
     (let/async ([(status server socket) (<- (uv/tcp-listen ctx "127.0.0.1:9191"))]
                 [stream (<- (tls-accept ctx tls-ctx socket))]

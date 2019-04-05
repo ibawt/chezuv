@@ -158,10 +158,14 @@
           (sig-handle)
           (let lp ()
             (let ([e (uv-loop-close (uv-context-loop ctx))])
-              (when (= UV_EBUSY e)
-                (walk-handles (uv-context-loop ctx) (lambda (l h) (info "~a is still running" (handle-type-name l))))
-                (run-loop)
-                (lp))))
+              (cond
+               ((= 0 e) #f)
+               ((= UV_EBUSY e)
+                (begin
+                  (walk-handles (uv-context-loop ctx) (lambda (l h) (info "~a is still running" (handle-type-name l))))
+                  (run-loop)
+                  (lp)))
+               (else (check e)))))
           (uv-loop-destroy (uv-context-loop ctx)))))
 
   (define (uv/getaddrinfo ctx name)
@@ -260,11 +264,9 @@
                        (check (uv-read-stop stream))
                        (uv-context-push-callback! ctx (lambda ()
                                                         (current-exception-state ex)
-                                                        (info "stream-read: ~a" nb)
                                                         (if (negative? nb)
                                                             (begin
                                                               (let ([base (ftype-pointer-address (ftype-ref uv-buf (base) buf))])
-                                                                (info "base = ~a, len: ~a" base (ftype-ref uv-buf (len) buf))
                                                                 (unless (= 0 base)
                                                                   (free-buf base)))
                                                               (k #f #f))
@@ -309,7 +311,6 @@
             (begin
               (send-buf bv start len k))
             (begin
-              (info "reading stuff...")
               (reader (lambda (s b)
                         (if s
                             (begin
@@ -332,12 +333,12 @@
                [code (foreign-callable (lambda (req status)
                                         (unlock-object code)
                                         (foreign-free shutdown-req)
-                                        (unless (= 0 status)
-                                          (info "ROBEREERRRTOOOOOOO"))
                                         (close-handle stream (lambda _
                                                                (uv-context-push-callback! ctx
                                                                                           (lambda ()
                                                                                             (current-exception-state ex)
+                                                                                            (unless (= 0 status)
+                                                                                              (info "ROBEREERRRTOOOOOOO"))
                                                                                             (k status))))))
                                       (void* int)
                                       void)])

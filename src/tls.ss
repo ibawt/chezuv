@@ -65,7 +65,6 @@
     (lambda (k)
       (if (positive? (ssl/num-bytes client))
           (let ([buf (ssl-output-buffer client)])
-            (info "ssl-outputbuffer has: ~a" (ftype-ref uv-buf (len) buf))
             ((uv/stream-write ctx stream buf)
              (lambda (n)
                (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
@@ -73,11 +72,9 @@
           (k))))
 
   (define (ssl-fill msg ctx client stream k)
-    (info "[~a] ~a ssl-fill: want_read: ~a" (ssl-type client) msg (ssl/want client))
     (if (= 1 (ssl/want client))
         (k)
         (let/async ([(nb buf) (<- (uv/stream-read ctx stream))])
-                   (info "nb: ~a" nb)
                    (cond
                     [(not nb) (error 'check-ssl "failed to read bytes" nb msg (ssl-type client))]
                     [(= UV_EOF nb) (k)]
