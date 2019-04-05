@@ -68,7 +68,6 @@
            (let ([errstr (if (uv-error? err)
                              (uv-err-name err)
                              (strerror (abs err)))])
-             (print-stack-trace 10)
              (raise (make-uv-error err errstr))))))))
 
   (define strerror
@@ -93,7 +92,11 @@
       (check (uv-signal-init (uv-context-loop ctx) sig-handle))
       (check (uv-signal-start-one-shot sig-handle
                                        (foreign-callable-entry-point code)
-                                       SIGINT))))
+                                       SIGINT))
+      (lambda ()
+        (close-handle sig-handle nothing)
+        (unlock-object code))))
+
   (define alloc-buffer
     (foreign-callable-entry-point
      (let ([alloc (foreign-callable
@@ -139,12 +142,12 @@
 
   (define (uv/call-with-context f)
     (define ctx (make-uv-context (make-uv-loop) '()))
+    (define sig-handle (register-signal-handlers ctx))
     (define (run-loop)
       (let lp ((r (uv-run (uv-context-loop ctx) 1))) ;; run event loop for one iteration
         (uv-context-pump-callbacks! ctx) ;; we call the callbacks here to avoid stale foreign contexts
         (when (positive? r)
           (lp (uv-run (uv-context-loop ctx) 1)))))
-    (register-signal-handlers ctx)
     (dynamic-wind
         (lambda () #f)
         (lambda ()
@@ -152,9 +155,11 @@
           (run-loop))
         (lambda ()
           (info "Exiting loop")
+          (sig-handle)
           (let lp ()
             (let ([e (uv-loop-close (uv-context-loop ctx))])
               (when (= UV_EBUSY e)
+                (walk-handles (uv-context-loop ctx) (lambda (l h) (info "~a is still running" (handle-type-name l))))
                 (run-loop)
                 (lp))))
           (uv-loop-destroy (uv-context-loop ctx)))))

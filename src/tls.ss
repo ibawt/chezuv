@@ -105,9 +105,9 @@
       (lambda (k)
         (let ([buf (if (string? sbuf) (string->uv-buf sbuf) sbuf)])
           ((check-ssl "tls-write" ctx client stream (lambda ()
-                                          (ssl/write client
-                                                     (ftype-pointer-address (ftype-ref uv-buf (base) buf))
-                                                     (ftype-ref uv-buf (len) buf))))
+                                                      (ssl/write client
+                                                                 (ftype-pointer-address (ftype-ref uv-buf (base) buf))
+                                                                 (ftype-ref uv-buf (len) buf))))
            (lambda (n)
              (unless (= n (ftype-ref uv-buf (len) buf))
                (error 'tls-writer "error in writing" n (ftype-ref uv-buf (len) buf)))
@@ -118,8 +118,7 @@
         (lambda (on-read)
           (let ([buf (get-buf)])
             ((check-ssl "tls-read" ctx client stream
-                        (lambda ()
-                          (ssl/read client buf buf-size)))
+                        (lambda () (ssl/read client buf buf-size)))
              (lambda (n)
                (unless (= 0 n)
                    (let ([bv (make-bytevector n)])

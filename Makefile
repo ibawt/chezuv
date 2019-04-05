@@ -6,7 +6,7 @@ RUN_SCHEME := $(SCHEME) --optimize-level=0 --libdirs $(SCHEME_LIB_DIRS) --debug-
 .PHONY: test docker_image clean
 
 test: test/fixtures/nginx/cert.pem
-	$(RUN_SCHEME) ./test/test.ss
+	@$(RUN_SCHEME) ./test/test.ss
 
 docker_image:
 	@docker build ./ -f test/Dockerfile -t chezuv

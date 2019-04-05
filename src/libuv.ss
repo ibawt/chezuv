@@ -74,6 +74,8 @@
    uv-ip4-addr
 
    ;; helpers
+   handle-type-name
+   walk-handles
    string->uv-buf
    make-uv-loop
    uv-error?
