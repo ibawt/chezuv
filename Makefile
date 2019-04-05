@@ -1,12 +1,12 @@
 SCHEME := scheme -q
 SCHEME_LIB_DIRS := vendor:src:test
 
-RUN_SCHEME := $(SCHEME) --libdirs $(SCHEME_LIB_DIRS) --debug-on-exception --program
+RUN_SCHEME := $(SCHEME) --optimize-level=0 --libdirs $(SCHEME_LIB_DIRS) --debug-on-exception --script
 
 .PHONY: test docker_image clean
 
 test: test/fixtures/nginx/cert.pem
-	@$(SCHEME) --libdirs $(SCHEME_LIB_DIRS) --debug-on-exception --program ./test/test.ss
+	$(RUN_SCHEME) ./test/test.ss
 
 docker_image:
 	@docker build ./ -f test/Dockerfile -t chezuv

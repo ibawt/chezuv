@@ -3,6 +3,7 @@
    ;; from uv.h
    uv-buf
    UV_EOF
+   UV_EBUSY
    UV_UNKNOWN_HANDLE
    UV_ASYNC
    UV_CHECK
@@ -101,6 +102,7 @@
   (define uv-error? positive?)
 
   (define UV_EOF -4095)
+  (define UV_EBUSY -16)
 
   (define UV_UNKNOWN_HANDLE 0)
   (define UV_ASYNC 1)

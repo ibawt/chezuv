@@ -8,6 +8,7 @@
    dec
    memcpy
    memcpy2
+   print-stack-trace
    memset
    trim-newline!
    find-char-by
@@ -18,9 +19,11 @@
    string-split
    from-c-string
    alloc-zero
-   find-char)
+   find-char
+   )
 
-  (import (chezscheme))
+  (import (chezscheme)
+          (log))
 
   (define init
     (case (machine-type)
@@ -89,6 +92,20 @@
       (let ([p (foreign-alloc size)])
         (memset p 0 size)
         p)))
+
+  (define (print-stack-trace max-depth)
+	  (call/cc (lambda (k)
+		           ;; (slog tag (format "backtrace of [~a] as following:" obj))
+		           (let loop ((cur (inspect/object k)) (i 0))
+		             (if (and (> (cur 'depth) 1) (< i max-depth))
+		                 (begin
+			                 (call-with-values
+			    	               (lambda () (cur 'source-path))
+				                 (case-lambda
+					                ((file line char)  (info "\tat ~a (~a:~a)" ((cur 'code) 'name) file line))
+					                ((file line)  (info "\tat ~a (~a:~a)" ((cur 'code) 'name) file line))
+					                (else (k))))
+			                 (loop (cur 'link) (+ i 1))))))))
 
   (define memcpy
     ;; u8* easy conversion for bytevector

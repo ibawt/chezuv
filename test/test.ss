@@ -13,7 +13,6 @@
   (let ((runner (test-runner-simple))
         (num-passed 0)
         (num-failed 0))
-
     (test-runner-on-test-end! runner
                               (lambda (runner)
                                 (let ([result
@@ -60,11 +59,19 @@
      (dynamic-wind
          (lambda ()
            (system "nginx -c nginx.conf -p test/fixtures/nginx >/dev/null 2>&1")
-           (sleep (make-time 'time-duration 50 0))
-           )
+           (sleep (make-time 'time-duration 50 0)))
          (lambda () . body)
          (lambda ()
            (system "nginx -c nginx.conf -s quit -p test/fixtures/nginx >/dev/null 2>&1"))))))
+
+(define-syntax define-async-test
+  (syntax-rules ()
+    ((_ name (ctx done) body ...)
+     (describe 'name
+               (call/cc
+                (lambda (done)
+                  (uv/with-context ctx
+                                   body ...)))))))
 
 (define run-command
   (lambda (cmd)
@@ -81,132 +88,101 @@
   (lambda (url)
     (string->number (run-command (format #f "curl --silent --write-out \"%{http_code}\" ~a" url)))))
 
-;; (describe "serving http"
-;;   (it "should serve a simple http requests"
-;;       (let ([resp (call/cc
-;;                    (lambda (k)
-;;                      (uv/call-with-loop
-;;                       (lambda (loop)
-;;                         (let/async ([(status server client) (<- (uv/tcp-listen loop "127.0.0.1:8181"))]
-;;                                     [status (<- (uv/serve-http client))])
-;;                                    (uv/close-stream client)) 
-;;                         (let/async ([resp (<- (uv/make-http-request loop (uv/string->url "http://localhost:8181")))])
-;;                                    (k resp))))))])
-;;         (test-equal 200 (cadar resp)))))
-
-;; (describe "serving https"
-;;   (it "should serve a simple https request"
-;;       (let ([resp
-;;               (call/cc
-;;                (lambda (k)
-;;                  (uv/call-with-loop
-;;                   (lambda (loop)
-;;                     (ssl/call-with-context "./fixtures/nginx/cert.pem" "./fixtures/nginx/key.pem" #f
-;;                       (lambda (ctx)
-;;                         (let/async ([(status server client) (<- (uv/tcp-listen loop "127.0.0.1:9191"))]
-;;                                     [status (<- (uv/serve-https ctx client))])
-;;                                    #f)
-;;                         (ssl/call-with-context "./fixtures/nginx/cert.pem" #f #t
-;;                                                (lambda (ctx)
-;;                                                  ((uv/make-https-request loop ctx (uv/string->url "https://localhost:9191")) k)))))))))])
-;;         (info "wat")
-;;         (test-equal 200 (cadar resp)))))
-
-;; (describe "http2 basic"
-;;   (it "should do something related to http2"
-;;       (let ([resp (call/cc
-;;                     (lambda (k)
-;;                       (uv/call-with-loop
-;;                       (lambda (loop)
-;;                         (ssl/call-with-context "./fixtures/nginx/cert.pem" "./fixtures/nginx/key.pem" #f
-;;                           (lambda (ctx)
-;;                             (uv/tcp-listen loop "127.0.0.1:9191"
-;;                                             (lambda (status server client)
-;;                                               (uv/serve-https ctx client (lambda (status)
-;;                                                                           #f))))))))
-;;                       ))])
-
-;;         (info "resp is: ~a" resp))))
-
 (define (waitgroup n on-done)
   (define times 0)
-  (lambda ()
+  (lambda _
     (set! times (+ times 1))
     (when (>= times n) (on-done))))
 
-(with-nginx
- (define-async-test client-http-requests (ctx done)
-   (let ([wg (waitgroup 3 done)])
-     (it "should make a simple http request"
-         (let/async ([resp (<- (http-do ctx (make-http-request "http://localhost:8080")))])
-                    (test-equal "http request" 200 (http-response-code resp))
-                    (wg)))
-     (it "should make a simple https request (verified)"
-         (let/async ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" #f #t)]
-                     [resp (<- (http-do ctx (make-http-request "https://localhost:9090" tls-ctx)))])
-                    (test-equal "https request" 200 (http-response-code resp))
-                    (wg)))
-     (it "should fail with a non verified cert"
-         (let ([tls-ctx (make-tls-context)])
-           (test-error #t ((http-do (make-http-request "https://localhost:9090") (lambda (resp) #f))))
-           (wg))))))
+;; (define-async-test simple-https-server (ctx done)
+;;   (define wg (waitgroup 2 done))
+;;   (let/async ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #f)]
+;;               [(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
+;;               [status (<- (serve-https ctx tls-ctx client))]
+;;               [_ (<- (uv/close-stream ctx client))]
+;;               )
+;;              (uv/close-handle server wg))
+;;   (let/async ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #t)]
+;;               [resp (<- (http-do ctx (make-http-request "https://localhost:8181" tls-ctx)))])
+;;              (test-equal "simple-https-server" 200 (http-response-code resp))
+;;              (wg)))
 
-(describe
- "url functions"
- (it "should parse a simple url"
-     (let ([url (string->url "http://google.ca")])
-       (test-equal "google.ca" (url-host url))
-       (test-eqv 80 (url-port url))
-       (test-equal "/" (url-path url))))
- (it "should parse a complex url"
-     (let ([url (string->url "https://google.ca:8080/foo/bar")])
-       (test-equal "google.ca" (url-host url))
-       (test-equal 'https (url-protocol url))
-       (test-eqv 8080 (url-port url))
-       (test-equal "/foo/bar" (url-path url))))
- (it "should barf on an invalid url"
-     (test-error url-error? (string->url "not an url"))))
+;; (define-async-test simple-http-server (ctx done)
+;;   (define wg (waitgroup 2 done))
+;;   (let/async ([(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
+;;               [status (<- (serve-http ctx client))]
+;;               [_ (<- (uv/close-stream ctx client))])
+;;              (uv/close-handle server wg))
+;;   (let/async ([resp (<- (http-do ctx (make-http-request "http://localhost:8181")))])
+;;              (test-equal "http-server" 200 (http-response-code resp))
+;;              (wg)))
 
-(describe "string-split"
-  (it "should split on a delimiter"
-    (let ([splits (string-split "0.0.0.0:4343" #\:)])
-      (test-equal '("0.0.0.0" "4343") splits))))
+;; (with-nginx
+;;  (define-async-test client-http-requests (ctx done)
+;;    (let ([wg (waitgroup 3 done)])
+;;      (it "should make a simple http request"
+;;          (let/async ([resp (<- (http-do ctx (make-http-request "http://localhost:8080")))])
+;;                     (test-equal "http request" 200 (http-response-code resp))
+;;                     (wg)))
+;;      (it "should make a simple https request (verified)"
+;;          (let/async ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" #f #t)]
+;;                      [resp (<- (http-do ctx (make-http-request "https://localhost:9090" tls-ctx)))])
+;;                     (test-equal "https request" 200 (http-response-code resp))
+;;                     (wg)))
+;;      (it "should fail with a non verified cert"
+;;          (let ([tls-ctx (make-tls-context)])
+;;            (test-error "non verified cert" #t ((http-do (make-http-request "https://localhost:9090") (lambda (resp) #f))))
+;;            (wg)))
 
-(define-syntax define-async-test
-  (syntax-rules ()
-      ((_ name (ctx done) body ...)
-       (describe 'name
-                 (call/cc
-                   (lambda (done)
-                     (uv/with-context ctx
-                                      body ...)))))))
+;;      )))
 
-(define-async-test simple-ping-pong (ctx done)
-  (define wg (waitgroup 2 done))
-  (let/async ([(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
-              [(_ msg) (<- (uv/stream-read->bytevector ctx client))]
-              [msg (utf8->string msg)])
-             (if (string=? "PING" msg)
-                 (let/async ([n (<- (uv/stream-write ctx client "PONG"))])
-                            (uv/close-stream client)
-                            (uv/close-handle server (lambda (_) (info "closed")))
-                            (test-assert #t)
-                            (wg))
-                 (begin
-                   (uv/close-stream client)
-                   (uv/close-handle server (lambda (_) (info "closed")))
-                   (test-assert #f)
-                   (wg))))
-  (let/async ([addr (uv/ipv4->sockaddr "127.0.0.1:8181")]
-              [socket (<- (uv/tcp-connect ctx addr))]
-              [n (<- (uv/stream-write ctx socket "PING"))]
-              [(_ msg) (<- (uv/stream-read->bytevector ctx socket))])
-             (test-equal "should get PONG back" "PONG" (utf8->string msg))
-             (wg)))
+;; (describe
+;;  "url functions"
+;;  (it "should parse a simple url"
+;;      (let ([url (string->url "http://google.ca")])
+;;        (test-equal "google.ca" (url-host url))
+;;        (test-eqv 80 (url-port url))
+;;        (test-equal "/" (url-path url))))
+;;  (it "should parse a complex url"
+;;      (let ([url (string->url "https://google.ca:8080/foo/bar")])
+;;        (test-equal "google.ca" (url-host url))
+;;        (test-equal 'https (url-protocol url))
+;;        (test-eqv 8080 (url-port url))
+;;        (test-equal "/foo/bar" (url-path url))))
+;;  (it "should barf on an invalid url"
+;;      (test-error url-error? (string->url "not an url"))))
+
+;; (describe "string-split"
+;;   (it "should split on a delimiter"
+;;     (let ([splits (string-split "0.0.0.0:4343" #\:)])
+;;       (test-equal '("0.0.0.0" "4343") splits))))
+
+;; (define-async-test simple-ping-pong (ctx done)
+;;   (define wg (waitgroup 2 done))
+;;   (let/async ([(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
+;;               [(_ msg) (<- (uv/stream-read->bytevector ctx client))]
+;;               [msg (utf8->string msg)])
+;;              (if (string=? "PING" msg)
+;;                  (let/async ([n (<- (uv/stream-write ctx client "PONG"))]
+;;                              [_ (<- (uv/close-stream ctx client))])
+;;                             (uv/close-handle server (lambda (_) (info "closed")))
+;;                             (wg))
+;;                  (begin
+;;                    (let/async ([_ (<- (uv/close-stream ctx client))])
+;;                               (uv/close-handle server (lambda (_) (info "closed")))
+;;                               (test-assert "tcp ping pong" #f)
+;;                               (wg)))))
+;;   (let/async ([addr (uv/ipv4->sockaddr "127.0.0.1:8181")]
+;;               [socket (<- (uv/tcp-connect ctx addr))]
+;;               [n (<- (uv/stream-write ctx socket "PING"))]
+;;               [(n msg) (<- (uv/stream-read->bytevector ctx socket))]
+;;               [_ (<- (uv/close-stream ctx socket))])
+;;              (info "~a ~a" n (utf8->string msg))
+;;              (test-equal "should get PONG back" "PONG" (utf8->string msg))
+;;              (wg)))
 
 (define-async-test tls-ping-pong (ctx done)
-  ;; TODO: why does this fail with 2
-  (define wg (waitgroup 1 done))
+  (define wg (waitgroup 2 (lambda () (info "exiting") (done))))
   (let ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #f)])
     (let/async ([(status server socket) (<- (uv/tcp-listen ctx "127.0.0.1:9191"))]
                 [stream (<- (tls-accept ctx tls-ctx socket))]
@@ -214,9 +190,11 @@
                 [(bv n) (<- ((tls-stream-reader stream) buf 0 2048))]
                 [msg (utf8->string (truncate-bytevector! bv n))])
                (if (string=? "PING" msg)
-                   (let/async ([n (<- ((tls-stream-writer stream) "PONG"))])
-                              (uv/close-stream socket)
-                              (uv/close-handle server (lambda (_) (info "closed")))
+                   (let/async ([n (<- ((tls-stream-writer stream) "PONG"))]
+                               [_ (info "We should be sending PONG: ~a" n)]
+                               [_ (<- (close-tls-stream ctx stream socket))]
+                               [_ (<- (uv/close-stream ctx socket))])
+                              (uv/close-handle server (lambda _ (info "SERVER CLOSED HANDLE")))
                               (test-assert "got the string PING and sent PONG" #t)
                               (wg))
                    (begin
@@ -224,16 +202,24 @@
                      (uv/close-handle server (lambda (_) (info "closed")))
                      (test-assert "didn't get a ping" #f)
                      (wg)))))
+
   (let ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #t)])
     (let/async ([socket (<- (uv/tcp-connect ctx (uv/ipv4->sockaddr "127.0.0.1:9191")))]
                 [stream (<- (tls-connect ctx tls-ctx socket))]
                 [n (<- ((tls-stream-writer stream) "PING"))]
                 [buf (make-bytevector 2048)]
+                [_ (info "client calling read")]
                 [(bv n) (<- ((tls-stream-reader stream) buf 0 2048))]
+                [_ (info "client got ~a bytes" n)]
                 [msg (utf8->string (truncate-bytevector! bv n))]
-                [n (<- (close-tls-stream ctx stream socket))])
-               (test-equal "client got PONG" "PONG" msg)
-               (uv/close-stream socket))))
+                [_ (info "client side got: ~a" msg)]
+                ;; [n (<- (close-tls-stream ctx stream socket))]
+                [_ (<- (uv/close-stream ctx socket))])
+               (info "got pong: ~a" msg)
+               (test-equal "tls client got PONG" "PONG" msg)
+               (wg)))
+
+  )
 
 (test-end "chezuv")
 

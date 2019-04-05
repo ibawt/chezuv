@@ -5,7 +5,9 @@
           http-response-version
           http-response-headers
           http-response-body
-          http-do)
+          http-do
+          serve-http
+          serve-https)
   (import (chezscheme)
           (utils)
           (tls)
@@ -30,10 +32,10 @@
   (define-record-type http-response
     (fields headers body status version code))
 
-  (define (uv/serve-http stream)
+  (define (serve-http ctx stream)
     (lambda (on-done)
-      (serve-http (uv/make-reader stream (lambda (b) (uv/stream-read stream b)))
-                  (lambda (s) (uv/stream-write stream s))
+      (%serve-http (uv/make-reader stream (lambda (b) ((uv/stream-read->bytevector ctx stream) b)))
+                  (lambda (s) (uv/stream-write ctx stream s))
                   on-done)))
 
   (define (uv/read-http-response reader)
@@ -44,10 +46,9 @@
                           (let* ([status (parse-status (car headers))]
                                  [headers (parse-headers (cdr headers))]
                                  [content-length (header->number headers "Content-Length")])
-                            (info "status: ~a" status)
                             (if content-length
                                 (if (= 0 content-length)
-                                    (k (list status headers #f))
+                                    (k (make-http-response headers #f (caddr status) (car status) (cadr status)))
                                     (begin
                                       (uv/read-fully reader content-length
                                                      (lambda (body)
@@ -93,12 +94,12 @@
           (not (and conn (string=? "close" conn)))
           #f)))
 
-  (define (serve-http reader writer on-done)
+  (define (%serve-http reader writer on-done)
     (let/async ([req (<- (uv/read-http-request reader))]
                 [status (<- (uv/write-http-response writer req))])
                (if (keep-alive? req)
                    (begin
-                     (serve-http reader writer on-done))
+                     (%serve-http reader writer on-done))
                    (begin
                      (on-done status)))))
 
@@ -125,8 +126,10 @@
                  [stream (<- (tls-connect ctx (http-request-tls-ctx req) sock))]
                  [n (<- ((tls-stream-writer stream) (format #f "GET / HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n\r\n" (url-host url))))]
                  [resp (<- (uv/read-http-response (tls-stream-reader stream)))]
-                 [_ (uv/close-stream sock)])
+                 [n (<- (close-tls-stream ctx stream sock))]
+                 [_ (<- (uv/close-stream ctx sock))])
                 (k resp))))
+
  ;; this one as well
  (define (http-do ctx req)
    (if (eq? 'https (url-protocol (http-request-url req)))
@@ -139,7 +142,8 @@
                      [status (<- (uv/stream-write ctx sock (format #f "GET / HTTP/1.1\r\nHost: ~a\r\nConnection: close\r\n\r\n" (url-host url))))]
                      [resp (<- (uv/read-http-response (uv/make-reader sock (lambda (b)
                                                                              ((uv/stream-read->bytevector ctx sock) b)))))]
-                     [_ (uv/close-stream sock)])
+                     [_ (<- (uv/close-stream ctx sock))]
+                     )
                     (k resp)))))
 
  (define (parse-headers raw)
@@ -154,17 +158,17 @@
           (split-header (utf8->string x)))
         raw))
 
- (define (uv/serve-https ctx stream)
+ (define (serve-https ctx tls-ctx stream)
    (lambda (k)
-     (let/async ([tls (<- (tls-accept ctx stream))])
-                (case (ssl/get-selected-alpn (car tls))
-                  ;; (h2 (serve-http2 (cadr tls) (caddr tls)
-                  ;;                  (lambda (ok)
-                  ;;                    (ssl/free-stream (car tls)) (k ok))))
-                  (http/1.1 (serve-http (cadr tls) (caddr tls)
-                                        (lambda (ok)
-                                          ((close-tls-stream tls) (lambda (n)
-                                                                    (k ok))))))))))
+     (guard (e [else (k #f)])
+      (let/async ([tls (<- (tls-accept ctx tls-ctx stream))])
+                 (case (ssl/get-selected-alpn (tls-stream-ssl tls))
+                   ;; (h2 (serve-http2 (cadr tls) (caddr tls)
+                   ;;                  (lambda (ok)
+                   ;;                    (ssl/free-stream (car tls)) (k ok))))
+                   (else (%serve-http (tls-stream-reader tls) (tls-stream-writer tls)
+                                      (lambda (ok)
+                                        ((close-tls-stream ctx tls stream) k)))))))))
 
  (define (parse-status status-line)
    (let ([status (string-split (utf8->string status-line) #\space)])

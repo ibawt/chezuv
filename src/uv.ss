@@ -68,6 +68,7 @@
            (let ([errstr (if (uv-error? err)
                              (uv-err-name err)
                              (strerror (abs err)))])
+             (print-stack-trace 10)
              (raise (make-uv-error err errstr))))))))
 
   (define strerror
@@ -99,7 +100,7 @@
                    (lambda (handle suggested-size b)
                      (let ([x (get-buf)])
                        (ftype-set! uv-buf (base) b (make-ftype-pointer unsigned-8 x))
-                       (ftype-set! uv-buf (len) b suggested-size)))
+                       (ftype-set! uv-buf (len) b (min buf-size suggested-size))))
                    (void* size_t (* uv-buf))
                    void)])
        (lock-object alloc)
@@ -135,17 +136,28 @@
   (define (uv/stop uv)
     (uv-stop (uv-context-loop uv)))
 
+
   (define (uv/call-with-context f)
     (define ctx (make-uv-context (make-uv-loop) '()))
+    (define (run-loop)
+      (let lp ((r (uv-run (uv-context-loop ctx) 1))) ;; run event loop for one iteration
+        (uv-context-pump-callbacks! ctx) ;; we call the callbacks here to avoid stale foreign contexts
+        (when (positive? r)
+          (lp (uv-run (uv-context-loop ctx) 1)))))
     (register-signal-handlers ctx)
-    (f ctx)
-    (let lp ((r (uv-run (uv-context-loop ctx) 1))) ;; run event loop for one iteration
-      (uv-context-pump-callbacks! ctx) ;; we call the callbacks here to avoid stale foreign contexts
-      (when (positive? r)
-        (lp (uv-run (uv-context-loop ctx) 1))))
-    (info "Exiting loop")
-    (uv-loop-close (uv-context-loop ctx))
-    (uv-loop-destroy (uv-context-loop ctx)))
+    (dynamic-wind
+        (lambda () #f)
+        (lambda ()
+          (f ctx)
+          (run-loop))
+        (lambda ()
+          (info "Exiting loop")
+          (let lp ()
+            (let ([e (uv-loop-close (uv-context-loop ctx))])
+              (when (= UV_EBUSY e)
+                (run-loop)
+                (lp))))
+          (uv-loop-destroy (uv-context-loop ctx)))))
 
   (define (uv/getaddrinfo ctx name)
     (lambda (k)
@@ -225,10 +237,10 @@
                          (foreign-free write-req)
                          (unlock-object code)
                          (uv-context-push-callback! ctx (lambda ()
-                                                      (current-exception-state ex)
-                                                      (if (= 0 status)
-                                                          (k status)
-                                                          (error 'stream-write "uv/stream-write" status (uv-err-name status))))))
+                                                          (current-exception-state ex)
+                                                          (if (= 0 status)
+                                                              (k status)
+                                                              (error 'stream-write "uv/stream-write" status (uv-err-name status))))))
                        (void* int)
                        void)])
          (lock-object code)
@@ -243,9 +255,13 @@
                        (check (uv-read-stop stream))
                        (uv-context-push-callback! ctx (lambda ()
                                                         (current-exception-state ex)
+                                                        (info "stream-read: ~a" nb)
                                                         (if (negative? nb)
                                                             (begin
-                                                              (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                                                              (let ([base (ftype-pointer-address (ftype-ref uv-buf (base) buf))])
+                                                                (info "base = ~a, len: ~a" base (ftype-ref uv-buf (len) buf))
+                                                                (unless (= 0 base)
+                                                                  (free-buf base)))
                                                               (k #f #f))
                                                             (k nb buf)))))
                      (void* ssize_t (* uv-buf))
@@ -281,7 +297,6 @@
             (set! read-pos (+ read-pos len))
             (when (>= read-pos buf-len)
               (set! buf #f))
-
             (on-read bv len))))
     (lambda (bv start len)
       (lambda (k)
@@ -289,6 +304,7 @@
             (begin
               (send-buf bv start len k))
             (begin
+              (info "reading stuff...")
               (reader (lambda (s b)
                         (if s
                             (begin
@@ -304,17 +320,25 @@
      (lambda (bv len)
        (on-done bv))))
 
-  (define (uv/close-stream stream)
-    (letrec ([shutdown-req (make-req UV_SHUTDOWN)]
-             [code (foreign-callable (lambda (req status)
-                                       (unlock-object code)
-                                       (foreign-free shutdown-req)
-                                       (close-handle stream nothing))
-                                     (void* int)
-                                     void)])
-      (lock-object code)
-      (check (uv-read-stop stream))
-      (check (uv-shutdown shutdown-req stream (foreign-callable-entry-point code)))))
+  (define (uv/close-stream ctx stream)
+    (lambda (k)
+      (letrec ([ex (current-exception-state)]
+               [shutdown-req (make-req UV_SHUTDOWN)]
+               [code (foreign-callable (lambda (req status)
+                                        (unlock-object code)
+                                        (foreign-free shutdown-req)
+                                        (unless (= 0 status)
+                                          (info "ROBEREERRRTOOOOOOO"))
+                                        (close-handle stream (lambda _
+                                                               (uv-context-push-callback! ctx
+                                                                                          (lambda ()
+                                                                                            (current-exception-state ex)
+                                                                                            (k status))))))
+                                      (void* int)
+                                      void)])
+       (lock-object code)
+       (check (uv-read-stop stream))
+       (check (uv-shutdown shutdown-req stream (foreign-callable-entry-point code))))))
 
   (define (addr->sockaddr addr port)
     (let ([s (ftype-ref addrinfo (ai_addr) addr)])

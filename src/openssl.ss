@@ -1,5 +1,6 @@
 (library (openssl)
   (export
+   ssl/want
    ssl/make-context
    ssl/free-context
    ssl/drain-output-buffer
@@ -23,9 +24,12 @@
    ssl/get-selected-alpn
    ssl/do-handshake
 
+   err-get-error
+
    ssl-error-none
    ssl-error-ssl
    ssl-error-want-read
+   ssl-error-zero-return
    ssl-error-want-write)
 
   (import (chezscheme)
@@ -60,12 +64,19 @@
     (negative? e))
 
   (define (ssl/get-error s n)
-    (ssl-get-error (ssl-stream-ssl s) n))
+    (let ([e (ssl-get-error (ssl-stream-ssl s) n)])
+      (unless (or (= 0 e) (= 2 e))
+          (info "~a: WTF!!!!!!!!!!!!!!!!!!!!!!" e)) e))
 
   (define bio-ctrl-pending
     (foreign-procedure "BIO_ctrl_pending"
                        (void*)
                        size_t))
+
+  (define ssl-set-read-ahead
+    (foreign-procedure "SSL_set_read_ahead"
+                       (void* int)
+                       void))
 
   (define (ssl/num-bytes s)
     (bio-ctrl-pending (ssl-stream-writer s)))
@@ -74,6 +85,7 @@
   (define ssl-error-ssl 1)
   (define ssl-error-want-read 2)
   (define ssl-error-want-write 3)
+  (define ssl-error-zero-return 6)
 
   (define ssl-op-all #x80000854)
   ;; SSL_OP_NO_SSLv2|SSL_OP_NO_SSLv3|SSL_OP_CIPHER_SERVER_PREFERENCE
@@ -110,6 +122,7 @@
         (if client?
             (ssl-set-connect-state ssl)
             (ssl-set-accept-state ssl))
+        ;; (ssl-set-read-ahead ssl 1)
         (make-ssl-stream ssl reader writer client?))))
 
   (define ssl/free-stream
@@ -131,7 +144,9 @@
         (if (positive? n)
             (loop (+ bytes-written n))
             (if (not (bio-should-retry (ssl-stream-writer ssl-stream)))
-                -1
+                (begin
+                  (info "THIS HAPPENED")
+                  -1)
                 bytes-written)))))
 
   (define (ssl/fill-input-buffer s buf len)
@@ -146,6 +161,14 @@
 
   (define (ssl/write s buf len)
     (ssl-write (ssl-stream-ssl s) buf len))
+
+  (define ssl-want
+    (foreign-procedure "SSL_want"
+                       (void*)
+                       int))
+
+  (define (ssl/want s)
+    (ssl-want (ssl-stream-ssl s)))
 
   (define ssl/connect
     (lambda (s)
@@ -183,6 +206,16 @@
           [e (err-get-error)])
       (err-get-string-n e b (bytevector-length b))
       (make-ssl-error e (from-c-string b))))
+
+  (define ssl-pending
+    (foreign-procedure "SSL_pending"
+                       (void*)
+                       int))
+
+  (define ssl-has-pending
+    (foreign-procedure "SSL_has_pending"
+                       (void*)
+                       int))
 
   (define ssl-new
     (foreign-procedure "SSL_new"
@@ -443,7 +476,9 @@
     (u8-list->bytevector (fold-left
                           (lambda (acc x)
                             (cons (string-length x) (append (map char->integer (string->list x)) acc))) '()
-                            '("http/1.1" "h2"))))
+                            '("http/1.1"
+                              ;; "h2"
+                              ))))
 
   (define ssl-select-next-proto
     (foreign-procedure "SSL_select_next_proto"
