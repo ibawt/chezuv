@@ -4,6 +4,7 @@
           alloc-stats
           tracked-in-use)
   (import (chezscheme))
+  ;; TODO: find some way of making this only for tests/debugging
 
   (define table (make-eq-hashtable))
 

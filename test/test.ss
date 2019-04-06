@@ -165,8 +165,7 @@
              (if (string=? "PING" msg)
                  (let/async ([n (<- (uv/stream-write ctx client "PONG"))]
                              [_ (<- (uv/close-stream ctx client))])
-                            (uv/close-handle server (lambda (_) (info "closed")))
-                            (wg))
+                            (uv/close-handle server wg))
                  (begin
                    (let/async ([_ (<- (uv/close-stream ctx client))])
                               (uv/close-handle server (lambda (_) (info "closed")))
@@ -212,5 +211,5 @@
                (test-equal "tls client got PONG" "PONG" msg)
                (wg))))
 
-(test-end "chezuv")
 (test-equal "foreign allocation counts" (cadr (assoc 'allocs (alloc-stats))) (cadr (assoc 'frees (alloc-stats))))
+(test-end "chezuv")

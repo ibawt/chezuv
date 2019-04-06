@@ -150,7 +150,6 @@
        (f ctx)
        (run-loop))
      (begin
-       (info "Exiting loop")
        (sig-handle)
        (unwind-protect
         (let lp ()
@@ -159,7 +158,6 @@
              ((= 0 e) #f)
              ((= UV_EBUSY e)
               (begin
-                (info "busy running loop again")
                 (run-loop)
                 (lp)))
              (else (check e)))))
