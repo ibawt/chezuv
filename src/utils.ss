@@ -160,7 +160,9 @@
   (define from-c-string
     (lambda (bv)
       (let ([n (find-in-bytevector 0 bv 0)])
-        (utf8->string (truncate-bytevector! bv n)))))
+        (if n
+            (utf8->string (truncate-bytevector! bv n))
+            (error 'from-c-string "terminator not found")))))
 
   (define slice-bytevector
     (lambda (bv start end)
@@ -199,5 +201,4 @@
       (cond
        ((>= pos (string-length str)) #f)
        ((char=? ch (string-ref str pos)) pos)
-       (else (loop (+ 1 pos))))))
-)
+       (else (loop (+ 1 pos)))))))
