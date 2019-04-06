@@ -7,10 +7,12 @@
    close-tls-stream
    make-tls-context
    tls-accept
+   with-tls-context
    tls-connect)
   (import (chezscheme)
           (bufferpool)
           (uv)
+          (alloc)
           (utils)
           (log)
           (openssl)
@@ -40,7 +42,7 @@
                (else (raise (ssl/library-error)))))))))))
 
   (define (ssl-output-buffer stream)
-    (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
+    (let* ([buf (make-ftype-pointer uv-buf (tracked-alloc (ftype-sizeof uv-buf) "ssl-output-buffer"))]
            [base (get-buf)]
            [n (ssl/drain-output-buffer stream base buf-size)])
       (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 base))
@@ -67,7 +69,7 @@
           (let ([buf (ssl-output-buffer client)])
             ((uv/stream-write ctx stream buf)
              (lambda (n)
-               (foreign-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
+               (tracked-free (ftype-pointer-address buf)) ;; stream-write will release the base pointer
                (k))))
           (k))))
 
@@ -96,32 +98,46 @@
      ([]
       (make-tls-context #f #f #t))))
 
+  (define-syntax with-tls-context
+    (syntax-rules ()
+      ((_ (t ctx) body ...)
+       (let ([t ctx])
+         (dynamic-wind
+             (lambda () #f)
+             (lambda () body ...)
+             (lambda ()
+               (ssl/free-context t)))))))
 
   (define (make-tls-writer ctx client stream)
     (lambda (sbuf)
       (lambda (k)
         (let ([buf (if (string? sbuf) (string->uv-buf sbuf) sbuf)])
-          ((check-ssl "tls-write" ctx client stream (lambda ()
-                                                      (ssl/write client
-                                                                 (ftype-pointer-address (ftype-ref uv-buf (base) buf))
-                                                                 (ftype-ref uv-buf (len) buf))))
-           (lambda (n)
-             (unless (= n (ftype-ref uv-buf (len) buf))
-               (error 'tls-writer "error in writing" n (ftype-ref uv-buf (len) buf)))
-             ((ssl-drain "tls-write" ctx client stream) (lambda () (k n)))))))))
+          (unwind-protect
+           ((check-ssl "tls-write" ctx client stream (lambda ()
+                                                       (ssl/write client
+                                                                  (ftype-pointer-address (ftype-ref uv-buf (base) buf))
+                                                                  (ftype-ref uv-buf (len) buf))))
+            (lambda (n)
+              (unless (= n (ftype-ref uv-buf (len) buf))
+                (error 'tls-writer "error in writing" n (ftype-ref uv-buf (len) buf)))
+              ((ssl-drain "tls-write" ctx client stream) (lambda () (k n)))))
+           (when (string? sbuf)
+             (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+             (tracked-free (ftype-pointer-address buf))))))))
 
   (define (make-tls-reader ctx client stream)
     (uv/make-reader stream
         (lambda (on-read)
           (let ([buf (get-buf)])
-            ((check-ssl "tls-read" ctx client stream
-                        (lambda () (ssl/read client buf buf-size)))
-             (lambda (n)
-               (unless (= 0 n)
-                   (let ([bv (make-bytevector n)])
-                     (memcpy bv buf n)
-                     (free-buf buf)
-                     (on-read stream bv)))))))))
+            (unwind-protect
+             ((check-ssl "tls-read" ctx client stream
+                         (lambda () (ssl/read client buf buf-size)))
+              (lambda (n)
+                (unless (= 0 n)
+                  (let ([bv (make-bytevector n)])
+                    (memcpy bv buf n)
+                    (on-read stream bv)))))
+             (free-buf buf))))))
 
   (define (tls-connect uv-ctx ssl-ctx stream)
     (let ([client (ssl/make-stream ssl-ctx #t)])

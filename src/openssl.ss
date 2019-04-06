@@ -34,6 +34,7 @@
 
   (import (chezscheme)
           (log)
+          (alloc)
           (utils))
 
   (define init
@@ -65,8 +66,7 @@
 
   (define (ssl/get-error s n)
     (let ([e (ssl-get-error (ssl-stream-ssl s) n)])
-      (unless (or (= 0 e) (= 2 e))
-          (info "~a: WTF!!!!!!!!!!!!!!!!!!!!!!" e)) e))
+      e))
 
   (define bio-ctrl-pending
     (foreign-procedure "BIO_ctrl_pending"
@@ -518,8 +518,8 @@
       (ssl-ctx-set-alpn-select-cb ctx (foreign-callable-entry-point code) 0)))
 
   (define (ssl/get-selected-alpn s)
-    (let ([len (foreign-alloc (ftype-sizeof int))]
-          [out (foreign-alloc (ftype-sizeof iptr))])
+    (let ([len (tracked-alloc (ftype-sizeof int) "alpn-len")]
+          [out (tracked-alloc (ftype-sizeof iptr) "alpn-out")])
       (ssl-get0-alpn-selected (ssl-stream-ssl s) out len)
       (let ((n (foreign-ref 'int len 0)))
         (let ([alpn
@@ -529,8 +529,8 @@
                      (list->string (reverse s))
                      (lp (cons (integer->char (foreign-ref 'unsigned-8 (foreign-ref 'void* out 0) i)) s)
                          (+ 1 i))))])
-          (foreign-free len)
-          (foreign-free out)
+          (tracked-free len)
+          (tracked-free out)
           (string->symbol alpn)))))
 
   (define ssl-get0-alpn-selected

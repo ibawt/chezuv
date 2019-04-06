@@ -27,10 +27,11 @@
         (let/async ([(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]
                     [(_ msg) (<- (uv/stream-read->bytevector ctx client))]
                     [msg (utf8->string msg)])
-                   (if (string=? "PING" msg)
-                     (let/async ([n (<- (uv/stream-write ctx client "PONG"))])
-                                (uv/close-stream client))
-                     (uv/close-stream client))))))))
+                   (if (string=? "PING\n" msg)
+                       (let/async ([n (<- (uv/stream-write ctx client "PONG"))]
+                                   [_ (<- (uv/close-stream ctx client))])
+                                  #f
+                                ))))))))
 
 
 

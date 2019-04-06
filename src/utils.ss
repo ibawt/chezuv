@@ -7,6 +7,7 @@
    inc
    dec
    memcpy
+   unwind-protect
    memcpy2
    print-stack-trace
    memset
@@ -23,6 +24,7 @@
    )
 
   (import (chezscheme)
+          (alloc)
           (log))
 
   (define init
@@ -30,6 +32,14 @@
       ((ta6le a6le)
        (begin
          (load-shared-object "libc.so.6")))))
+
+  (define-syntax unwind-protect
+    (syntax-rules ()
+      ((_ body cleanup ...)
+       (dynamic-wind
+           (lambda () #f)
+           (lambda () body)
+           (lambda () cleanup ...)))))
 
   (define-syntax macro
     (syntax-rules ()
@@ -88,8 +98,8 @@
     (- x 1))
 
   (define alloc-zero
-    (lambda (size)
-      (let ([p (foreign-alloc size)])
+    (lambda (size msg)
+      (let ([p (tracked-alloc size msg)])
         (memset p 0 size)
         p)))
 

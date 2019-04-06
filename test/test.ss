@@ -4,6 +4,7 @@
         (log)
         (utils)
         (url)
+        (alloc)
         (tls)
         (ansi)
         (uv)
@@ -171,8 +172,7 @@
                               (uv/close-handle server (lambda (_) (info "closed")))
                               (test-assert "tcp ping pong" #f)
                               (wg)))))
-  (let/async ([addr (uv/ipv4->sockaddr "127.0.0.1:8181")]
-              [socket (<- (uv/tcp-connect ctx addr))]
+  (let/async ([socket (<- (uv/tcp-connect ctx "127.0.0.1:8181"))]
               [n (<- (uv/stream-write ctx socket "PING"))]
               [(n msg) (<- (uv/stream-read->bytevector ctx socket))]
               [_ (<- (uv/close-stream ctx socket))])
@@ -191,7 +191,7 @@
                    (let/async ([n (<- ((tls-stream-writer stream) "PONG"))]
                                [_ (<- (close-tls-stream ctx stream socket))]
                                [_ (<- (uv/close-stream ctx socket))])
-                              (uv/close-handle server (lambda _ (info "SERVER CLOSED HANDLE")))
+                              (uv/close-handle server (lambda _ #f))
                               (test-assert "got the string PING and sent PONG" #t)
                               (wg))
                    (begin
@@ -201,7 +201,7 @@
                      (wg)))))
 
   (let ([tls-ctx (make-tls-context "test/fixtures/nginx/cert.pem" "test/fixtures/nginx/key.pem" #t)])
-    (let/async ([socket (<- (uv/tcp-connect ctx (uv/ipv4->sockaddr "127.0.0.1:9191")))]
+    (let/async ([socket (<- (uv/tcp-connect ctx "127.0.0.1:9191"))]
                 [stream (<- (tls-connect ctx tls-ctx socket))]
                 [n (<- ((tls-stream-writer stream) "PING"))]
                 [buf (make-bytevector 2048)]
@@ -213,4 +213,4 @@
                (wg))))
 
 (test-end "chezuv")
-
+(test-equal "foreign allocation counts" (cadr (assoc 'allocs (alloc-stats))) (cadr (assoc 'frees (alloc-stats))))

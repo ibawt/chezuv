@@ -89,6 +89,7 @@
 
   (import (chezscheme)
           (inet)
+          (alloc)
           (bufferpool)
           (utils))
 
@@ -143,10 +144,10 @@
     (uv-handle-type-name (uv-handle-get-type handle)))
 
   (define (make-req t)
-    (alloc-zero (uv-req-size t)))
+    (alloc-zero (uv-req-size t) (format #f "req: ~a" (uv-handle-type-name t))))
 
   (define (make-handler t)
-    (alloc-zero (uv-handle-size t)))
+    (alloc-zero (uv-handle-size t) (format #f "handler: ~a" (uv-handle-type-name t))))
 
   (define uv-loop-size
     (foreign-procedure "uv_loop_size"
@@ -351,23 +352,19 @@
                        int))
 
   (define (string->uv-buf s)
-    (let* ([buf (make-ftype-pointer uv-buf (foreign-alloc (ftype-sizeof uv-buf)))]
+    (let* ([buf (make-ftype-pointer uv-buf (tracked-alloc (ftype-sizeof uv-buf) "string->uv-buf"))]
            [bytes (string->utf8 s)]
            [b (get-buf)])
-      (bytevector-for-each
-       (lambda (x i)
-         (foreign-set! 'unsigned-8 b i x))
-       bytes)
+      (memcpy2 b bytes (bytevector-length bytes))
       (ftype-set! uv-buf (base) buf (make-ftype-pointer unsigned-8 b))
       (ftype-set! uv-buf (len) buf (bytevector-length bytes))
       buf))
 
   (define (uv-loop-destroy uv)
-    (uv-loop-close uv)
-    (foreign-free uv))
+    (tracked-free uv))
 
   (define (make-uv-loop)
-    (let ((l (alloc-zero (uv-loop-size))))
+    (let ((l (alloc-zero (uv-loop-size) "uv-loop")))
       (uv-loop-init l)
       l))
 
@@ -386,9 +383,10 @@
     (if (= 0 (uv-is-closing h))
       (letrec ([code (foreign-callable
                       (lambda (h)
-                        (cb h)
-                        (foreign-free h)
-                        (unlock-object code))
+                        (unlock-object code)
+                        (unwind-protect
+                         (cb h)
+                         (tracked-free h)))
                       (void*)
                       void)])
 
