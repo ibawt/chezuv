@@ -334,18 +334,19 @@
     (lambda (k)
       (letrec ([ex (current-exception-state)]
                [shutdown-req (make-req UV_SHUTDOWN)]
-               [code (foreign-callable (lambda (req status)
-                                        (unlock-object code)
-                                        (tracked-free shutdown-req)
-                                        (close-handle stream (lambda _
-                                                               (uv-context-push-callback! ctx
-                                                                                          (lambda ()
-                                                                                            (current-exception-state ex)
-                                                                                            (unless (= 0 status)
-                                                                                              (info "ROBEREERRRTOOOOOOO"))
-                                                                                            (k status))))))
-                                      (void* int)
-                                      void)])
+               [code (foreign-callable
+                      (lambda (req status)
+                        (unlock-object code)
+                        (tracked-free shutdown-req)
+                        (close-handle stream (lambda _
+                                               (uv-context-push-callback! ctx
+                                                                          (lambda ()
+                                                                            (current-exception-state ex)
+                                                                            (unless (= 0 status)
+                                                                              (info "ROBEREERRRTOOOOOOO"))
+                                                                            (k status))))))
+                      (void* int)
+                      void)])
        (lock-object code)
        (check (uv-read-stop stream))
        (check (uv-shutdown shutdown-req stream (foreign-callable-entry-point code))))))
@@ -430,18 +431,4 @@
       (lock-object code)
       (check (uv-timer-init (uv-context-loop ctx)  a))
       (check (uv-timer-start a (foreign-callable-entry-point code) timeout repeat))))
-
-  (define malloc-gc)
-  (let ([malloc-guardian (make-guardian)])
-    (set! malloc-gc
-          (lambda (size)
-            (let ([m (tracked-alloc size "malloc-gc")])
-              (malloc-guardian m)
-              m)))
-    (collect-request-handler
-     (lambda ()
-       (collect)
-       (let f ([m (malloc-guardian)])
-         (when m
-           (tracked-free m)
-           (f (malloc-guardian))))))))
+)
