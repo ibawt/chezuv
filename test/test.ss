@@ -157,6 +157,64 @@
     (let ([splits (string-split "0.0.0.0:4343" #\:)])
       (test-equal '("0.0.0.0" "4343") splits))))
 
+(define-syntax with-server
+  (syntax-rules ()
+    ((_ ctx ((s server) status client) body ...)
+     (let/async ([(status s client) (<- server)])
+                (unwind-protect
+                 (begin
+                   body ...)
+                 (uv/close-handle s (lambda _ #f)))))))
+
+(define-syntax with-stream
+  (syntax-rules ()
+    ((_ ctx (client client-init) body ...)
+     (let/async ([client (<- client-init)])
+                (unwind-protect
+                 (begin
+                   body ...)
+                 (begin
+                   (info "in exit part")
+                   (let/async ([r (<- (uv/close-stream ctx client))])
+                              #f)
+                   )))
+    )))
+
+(define-async-test ideal-ping-pong (ctx done)
+  (define wg (waitgroup 2 done))
+  (with-server ctx ((server (uv/tcp-listen ctx "127.0.0.1:8181")) status client)
+      (let/async ([(_ msg) (<- (uv/stream-read->bytevector ctx client))]
+                  [msg (utf8->string msg)])
+                 (info "server msg: ~a" msg)
+                (if (string=? "PING" msg)
+                    (let/async ([n (<- (uv/stream-write ctx client "PONG"))]
+                                [_ (info "wrote pong")]
+                                [_ (<- (uv/close-stream ctx client))])
+                               (test-assert "ideal tcp ping pong" #t)
+                               (wg))
+                    (begin
+                      (let/async ([_ (<- (uv/close-stream ctx client))])
+                                  (uv/close-handle server (lambda (_) (info "closed")))
+                                  (test-assert "tcp ping pong" #f)
+                                  (wg)))) ))
+  ;; (with-stream ctx (socket (uv/tcp-connect ctx "127.0.0.1:8181"))
+  ;;              (info "ocnnected: ~a " socket)
+  ;;       (let/async ([n (<- (uv/stream-write ctx socket "PING"))]
+  ;;                   [_ (info "wrote stuff")]
+  ;;                   [(n msg) (<- (uv/stream-read->bytevector ctx socket))])
+  ;;                  (info "got :~a back" (utf8->string msg))
+  ;;                 (test-equal "should get PONG back" "PONG" (utf8->string msg))
+  ;;                 (wg)))
+
+  (let/async ([socket (<- (uv/tcp-connect ctx "127.0.0.1:8181"))]
+              [n (<- (uv/stream-write ctx socket "PING"))]
+              [(n msg) (<- (uv/stream-read->bytevector ctx socket))]
+              [_ (<- (uv/close-stream ctx socket))])
+             (test-equal "should get PONG back" "PONG" (utf8->string msg))
+             (wg))
+
+  )
+
 (define-async-test simple-ping-pong (ctx done)
   (define wg (waitgroup 2 done))
   (let/async ([(status server client) (<- (uv/tcp-listen ctx "127.0.0.1:8181"))]

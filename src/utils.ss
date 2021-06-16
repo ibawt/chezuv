@@ -20,8 +20,7 @@
    string-split
    from-c-string
    alloc-zero
-   find-char
-   )
+   find-char)
 
   (import (chezscheme)
           (alloc)

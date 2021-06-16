@@ -1,10 +1,9 @@
 (library (http)
   (export make-http-request
-          http-response-code
           http-response-status
-          http-response-version
           http-response-headers
           http-response-body
+          make-http-response
           http-do
           serve-http
           serve-https)
@@ -17,7 +16,10 @@
           (uv))
 
   (define-record-type (http-request %make-http-request http-request?)
-    (fields headers body method url tls-ctx))
+    (fields headers body status url tls-ctx))
+
+  (define (http-request-version req)
+    (caddr (http-request-status req)))
 
   (define make-http-request
     (case-lambda
@@ -29,14 +31,18 @@
      ([url]
       (make-http-request url '()))))
 
-  (define-record-type http-response
-    (fields headers body status version code))
+  (define-record-type http-status
+    (fields code method))
 
-  (define (serve-http ctx stream)
+  (define-record-type http-response
+    (fields headers body status))
+
+  (define (serve-http ctx stream handler)
     (lambda (on-done)
       (%serve-http (uv/make-reader stream (lambda (b) ((uv/stream-read->bytevector ctx stream) b)))
-                  (lambda (s) (uv/stream-write ctx stream s))
-                  on-done)))
+                   (lambda (s) (uv/stream-write ctx stream s))
+                   handler
+                   on-done)))
 
   (define (uv/read-http-response reader)
     (lambda (k)
@@ -48,13 +54,13 @@
                                  [content-length (header->number headers "Content-Length")])
                             (if content-length
                                 (if (= 0 content-length)
-                                    (k (make-http-response headers #f (caddr status) (car status) (cadr status)))
+                                    (k (make-http-response headers #f status)))
                                     (begin
                                       (uv/read-fully reader content-length
                                                      (lambda (body)
-                                                       (k (make-http-response headers body (caddr status) (car status) (cadr status)))))))
-                                (k (make-http-response headers #t (caddr status) (car status) (cadr status)))))
-                          (error 'eof "read to end of line"))))))
+                                                       (k (make-http-response headers body status)))))))
+                                (k (make-http-response headers #t #f)))))
+                          (error 'eof "read to end of line")))
 
   (define (header-value headers key)
     (let ([v (assoc key headers)])
@@ -65,6 +71,12 @@
   (define (header->number headers key)
     (let ([v (header-value headers key)])
       (if v (string->number v) v)))
+
+  (define (http-response-string-by-code code)
+    (case code
+      ((200) "OK")
+      ((500) "Internal Server Error")
+      (else "IDK")))
 
   (define (uv/read-http-request reader)
     (lambda (k)
@@ -77,38 +89,61 @@
                             (if content-length
                                 (begin
                                   (if (= 0 content-length)
-                                      (k (list status headers #f))
+                                      (k (%make-http-request headers #f status #f #f))
                                       (uv/read-fully reader content-length
                                                      (lambda (body)
-                                                       (k (list status headers body))))))
-                                (k (list status headers #t))))
+                                                       (k (%make-http-request headers body status #f #f))))))
+                                (k (%make-http-request headers #t status #f #f))))
                           (error 'eof "read to end of line"))))))
 
-  (define (uv/write-http-response writer req)
-    (writer "HTTP/1.1 200 OK\r\nVia: ChezScheme\r\nContent-Length: 0\r\n\r\n"))
+  (define default-transcoder (make-transcoder (utf-8-codec)))
+
+  (define (http-response-serialize response)
+    (let-values ([(op g) (open-bytevector-output-port default-transcoder)])
+      (format op "HTTP/1.1 ~d ~a\r\n" (car (http-response-status response))
+              (http-response-string-by-code (car (http-response-status response))))
+      (for-each
+       (lambda (x)
+         (format op "~a: ~a\r\n" (car x) (cadr x)))
+       (http-response-headers response))
+      (format op "Date: ~a\r\n" (date-and-time (current-date)))
+      (when (http-response-body response)
+        (format op "Content-Length: ~d\r\n" (bytevector-length (http-response-body response))))
+      (format op "\r\n")
+      (if (http-response-body response)
+          (put-bytevector op (http-response-body response)))
+      (format op "\r\n")
+      (g)))
+
+  (define (uv/write-http-response writer response)
+    (writer (http-response-serialize response)))
 
   (define (keep-alive? req)
-    (let ([version (string=? "HTTP/1.1" (caddar req))]
-          [conn (header-value (cadr req) "Connection")])
+    (let ([version (string=? "HTTP/1.1" (http-request-version req))]
+          [conn (header-value (http-request-headers req) "Connection")])
       (if version
           (not (and conn (string=? "close" conn)))
           #f)))
 
-  (define (%serve-http reader writer on-done)
-    (let/async ([req (<- (uv/read-http-request reader))]
-                [status (<- (uv/write-http-response writer req))])
-               (if (keep-alive? req)
-                   (begin
-                     (%serve-http reader writer on-done))
-                   (begin
-                     (on-done status)))))
+  (define (error-response-handler writer error on-done)
+    ((uv/write-http-response writer (make-http-response '() "error" '(500))) on-done))
 
+  (define (%serve-http reader writer handler on-done)
+    (let/async ([req (<- (uv/read-http-request reader))] )
+               (guard (x [(error? x) (error-response-handler writer x on-done)])
+                 (let/async ([resp (<- (handler req))]
+                             [status (<- (uv/write-http-response writer resp))])
+                            (if (keep-alive? req)
+                                (%serve-http reader writer handler on-done)
+                                (on-done status))))))
+
+  ;; TODO: fix this to return a lamba (k)
  (define (read-headers reader done)
    (define lines '())
    (uv/read-lines reader
                   (lambda (line)
                     (if (or (not line) (= 0 (bytevector-length line)))
-                        (begin
+                         (begin
                           (if line
                               (done (reverse lines)))
                           #f)
@@ -158,7 +193,7 @@
           (split-header (utf8->string x)))
         raw))
 
- (define (serve-https ctx tls-ctx stream)
+ (define (serve-https ctx tls-ctx stream handler)
    (lambda (k)
      (guard (e [else (k #f)])
       (let/async ([tls (<- (tls-accept ctx tls-ctx stream))])
@@ -166,7 +201,7 @@
                    ;; (h2 (serve-http2 (cadr tls) (caddr tls)
                    ;;                  (lambda (ok)
                    ;;                    (ssl/free-stream (car tls)) (k ok))))
-                   (else (%serve-http (tls-stream-reader tls) (tls-stream-writer tls)
+                   (else (%serve-http (tls-stream-reader tls) (tls-stream-writer tls) handler
                                       (lambda (ok)
                                         ((close-tls-stream ctx tls stream) k)))))))))
 

@@ -188,7 +188,6 @@
         (ftype-set! addrinfo (ai_socktype) hint SOCK_STREAM)
         (check (uv-getaddrinfo (uv-context-loop ctx) req (foreign-callable-entry-point code)
                                name #f hint)))))
-
   (define (uv/tcp-connect uv addr)
     (define maddr (if (string? addr) (uv/ipv4->sockaddr addr) addr))
     (lambda (k)
@@ -238,26 +237,30 @@
         (check (uv-idle-start idle (foreign-callable-entry-point code))))))
 
   (define (uv/stream-write ctx stream s)
-    (define buf (if (string? s) (string->uv-buf s) s))
-     (lambda (k)
-       (letrec ([write-req (make-req UV_WRITE)]
-                [ex (current-exception-state)]
-                [code (foreign-callable
-                       (lambda (req status)
-                         (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
-                         (tracked-free write-req)
-                         (when (string? s)
-                           (tracked-free (ftype-pointer-address buf)))
-                         (unlock-object code)
-                         (uv-context-push-callback! ctx (lambda ()
-                                                          (current-exception-state ex)
-                                                          (if (= 0 status)
-                                                              (k status)
-                                                              (error 'stream-write "uv/stream-write" status (uv-err-name status))))))
-                       (void* int)
-                       void)])
-         (lock-object code)
-         (check (uv-write write-req stream buf 1 (foreign-callable-entry-point code))))))
+    (define buf
+      (cond
+       ((string? s) (string->uv-buf s))
+       ((bytevector? s) (bytevector->uv-buf s))
+       (else s)))
+    (lambda (k)
+      (letrec ([write-req (make-req UV_WRITE)]
+               [ex (current-exception-state)]
+               [code (foreign-callable
+                      (lambda (req status)
+                        (free-buf (ftype-pointer-address (ftype-ref uv-buf (base) buf)))
+                        (tracked-free write-req)
+                        (when (or (string? s) (bytevector? s))
+                          (tracked-free (ftype-pointer-address buf)))
+                        (unlock-object code)
+                        (uv-context-push-callback! ctx (lambda ()
+                                                         (current-exception-state ex)
+                                                         (if (= 0 status)
+                                                             (k status)
+                                                             (error 'stream-write "uv/stream-write" status (uv-err-name status))))))
+                      (void* int)
+                      void)])
+        (lock-object code)
+        (check (uv-write write-req stream buf 1 (foreign-callable-entry-point code))))))
 
   (define (uv/stream-read ctx stream)
     (lambda (k)
@@ -343,7 +346,7 @@
                                                                           (lambda ()
                                                                             (current-exception-state ex)
                                                                             (unless (= 0 status)
-                                                                              (info "ROBEREERRRTOOOOOOO"))
+                                                                              (info "ROBEREERRRTOOOOOOO: ~a" status))
                                                                             (k status))))))
                       (void* int)
                       void)])

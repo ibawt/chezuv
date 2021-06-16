@@ -9,7 +9,6 @@
   (define-record-type huffman-entry
     (fields char value bits))
 
-
   (define huffman-table
     (list->vector
      (map (lambda (e) (apply make-huffman-entry e))
