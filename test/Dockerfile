@@ -8,4 +8,6 @@ RUN mkdir /app
 COPY . /app
 WORKDIR /app
 
+RUN make test
+
 ENTRYPOINT ["make", "test"]

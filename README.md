@@ -1,5 +1,5 @@
 # Chezuv
-[![Build Status](https://travis-ci.org/ibawt/chezuv.svg?branch=master)](https://travis-ci.org/ibawt/chezuv)
+[![Continuous integration](https://github.com/ibawt/chezuv/actions/workflows/ci.yml/badge.svg)](https://github.com/ibawt/chezuv/actions/workflows/ci.yml)
 
 Chezuv is an experiment with Chez Scheme and libuv.
 
