@@ -1,0 +1,7 @@
+name: Continuous integration
+on: [push]
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+    - docker build . -f test/Dockerfile
