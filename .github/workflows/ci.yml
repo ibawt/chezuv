@@ -4,4 +4,4 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-    - run: docker build . -f test/Dockerfile
+    - run: docker build -f test/Dockerfile .
