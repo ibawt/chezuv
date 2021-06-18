@@ -1,10 +1,11 @@
 name: Continuous integration
-push:
-  branches: [ $default-branch ]
-pull_request:
-  branches: [ $default-branch ]
+on:
+  push:
+    branches: [ $default-branch ]
+  pull_request:
+    branches: [ $default-branch ]
 jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-    - run: docker build . -f $PWD/test/Dockerfile
+    - run: docker build . -f test/Dockerfile
